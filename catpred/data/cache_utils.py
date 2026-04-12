@@ -2,6 +2,7 @@ import os
 from shutil import rmtree
 import torch
 import hashlib
+import tempfile
 from functools import wraps
 from pathlib import Path
 from catpred.security import load_torch_artifact
@@ -93,16 +94,31 @@ def cache_fn(
 
         if entry_path.exists():
             log(f'cache hit: fetching {t} from {str(entry_path)}')
-            return load_torch_artifact(
-                str(entry_path),
-                purpose="esm cache entry",
-                roots=[CACHE_PATH],
-            )
+            try:
+                return load_torch_artifact(
+                    str(entry_path),
+                    purpose="esm cache entry",
+                    roots=[CACHE_PATH],
+                )
+            except Exception as exc:
+                # Self-heal corrupted/truncated cache entries (e.g. interrupted write).
+                log(f'cache miss after corrupt entry ({entry_path}): {exc}')
+                try:
+                    entry_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
 
         out = fn(t, *args, **kwargs)
 
         log(f'saving: {t} to {str(entry_path)}')
-        torch.save(out, str(entry_path))
+        tmp_fd, tmp_name = tempfile.mkstemp(prefix=f"{entry_path.stem}.", suffix=".tmp", dir=str(entry_path.parent))
+        os.close(tmp_fd)
+        try:
+            torch.save(out, tmp_name)
+            os.replace(tmp_name, str(entry_path))
+        finally:
+            if os.path.exists(tmp_name):
+                os.remove(tmp_name)
         return out
         
     return inner

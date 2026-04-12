@@ -47,7 +47,7 @@ def run_training(args: TrainArgs,
     torch.manual_seed(args.pytorch_seed)
 
     # Split data
-    debug(f'Splitting data with seed {args.seed}')
+    # debug(f'Splitting data with seed {args.seed}')
     if args.separate_test_path:
         test_data = get_data(path=args.separate_test_path,
                              protein_records_path = args.protein_records_path,
@@ -107,10 +107,11 @@ def run_training(args: TrainArgs,
 
     if args.dataset_type == 'classification':
         class_sizes = get_class_sizes(data)
-        debug('Class sizes')
+        # debug('Class sizes')
         for i, task_class_sizes in enumerate(class_sizes):
-            debug(f'{args.task_names[i]} '
-                  f'{", ".join(f"{cls}: {size * 100:.2f}%" for cls, size in enumerate(task_class_sizes))}')
+            # debug(f'{args.task_names[i]} '
+            #       f'{", ".join(f"{cls}: {size * 100:.2f}%" for cls, size in enumerate(task_class_sizes))}')
+            pass
         train_class_sizes = get_class_sizes(train_data, proportion=False)
         args.train_class_sizes = train_class_sizes
 
@@ -151,8 +152,8 @@ def run_training(args: TrainArgs,
 
     args.train_data_size = len(train_data)
 
-    debug(f'Total size = {len(data):,} | '
-          f'train size = {len(train_data):,} | val size = {len(val_data):,} | test size = {len(test_data):,}')
+    # debug(f'Total size = {len(data):,} | '
+        #   f'train size = {len(train_data):,} | val size = {len(val_data):,} | test size = {len(test_data):,}')
 
     if len(val_data) == 0:
         raise ValueError('The validation data split is empty. During normal catpred training (non-sklearn functions), \
@@ -170,7 +171,7 @@ def run_training(args: TrainArgs,
 
     # Initialize scaler and scale training targets by subtracting mean and dividing standard deviation (regression only)
     if args.dataset_type == 'regression':
-        debug('Fitting scaler')
+        # debug('Fitting scaler')
         if args.is_atom_bond_targets:
             scaler = None
             atom_bond_scaler = train_data.normalize_atom_bond_targets()
@@ -228,7 +229,8 @@ def run_training(args: TrainArgs,
     )
 
     if args.class_balance:
-        debug(f'With class_balance, effective train size = {train_data_loader.iter_size:,}')
+        # debug(f'With class_balance, effective train size = {train_data_loader.iter_size:,}')
+        pass
 
     # Train ensemble of models
     for model_idx in range(args.ensemble_size):
@@ -242,31 +244,33 @@ def run_training(args: TrainArgs,
 
         # Load/build model
         if args.checkpoint_paths is not None:
-            debug(f'Loading model {model_idx} from {args.checkpoint_paths[model_idx]}')
+            # debug(f'Loading model {model_idx} from {args.checkpoint_paths[model_idx]}')
             model = load_checkpoint(args.checkpoint_paths[model_idx], logger=logger)
         else:
-            debug(f'Building model {model_idx}')
+            # debug(f'Building model {model_idx}')
             model = MoleculeModel(args)
 
         # Optionally, overwrite weights:
         if args.checkpoint_frzn is not None:
-            debug(f'Loading and freezing parameters from {args.checkpoint_frzn}.')
+            # debug(f'Loading and freezing parameters from {args.checkpoint_frzn}.')
             model = load_frzn_model(model=model, path=args.checkpoint_frzn, current_args=args, logger=logger)
 
-        debug(model)
+        # debug(model)
 
         if args.checkpoint_frzn is not None:
             if args.unfreeze_all:
                 print('Force unfreezing all paramters')
                 for param in model.parameters():
                     param.requires_grad = True
-            debug(f'Number of unfrozen parameters = {param_count(model):,}')
-            debug(f'Total number of parameters = {param_count_all(model):,}')
+            # debug(f'Number of unfrozen parameters = {param_count(model):,}')
+            # debug(f'Total number of parameters = {param_count_all(model):,}')
         else:
-            debug(f'Number of parameters = {param_count_all(model):,}')
+            # debug(f'Number of parameters = {param_count_all(model):,}')
+            pass
 
         if args.cuda:
-            debug('Moving model to cuda')
+            # debug('Moving model to cuda')
+            pass
         model = model.to(args.device)
 
         # Ensure that model is saved in correct location for evaluation if 0 epochs
@@ -284,7 +288,7 @@ def run_training(args: TrainArgs,
         best_score = float('inf') if args.minimize_score else -float('inf')
         best_epoch, n_iter = 0, 0
         for epoch in trange(args.epochs):
-            debug(f'Epoch {epoch}')
+            # debug(f'Epoch {epoch}')
             n_iter = train(
                 model=model,
                 data_loader=train_data_loader,
@@ -313,13 +317,13 @@ def run_training(args: TrainArgs,
             for metric, scores in val_scores.items():
                 # Average validation score\
                 mean_val_score = multitask_mean(scores, metric=metric)
-                debug(f'Validation {metric} = {mean_val_score:.6f}')
+                # debug(f'Validation {metric} = {mean_val_score:.6f}')
                 writer.add_scalar(f'validation_{metric}', mean_val_score, n_iter)
 
                 if args.show_individual_scores:
                     # Individual validation scores
                     for task_name, val_score in zip(args.task_names, scores):
-                        debug(f'Validation {task_name} {metric} = {val_score:.6f}')
+                        # debug(f'Validation {task_name} {metric} = {val_score:.6f}')
                         writer.add_scalar(f'validation_{task_name}_{metric}', val_score, n_iter)
 
             # Save model checkpoint if improved validation score

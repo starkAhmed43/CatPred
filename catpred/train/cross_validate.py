@@ -46,12 +46,12 @@ def cross_validate(args: TrainArgs,
                                      target_columns=args.target_columns, ignore_columns=args.ignore_columns)
 
     # Print command line
-    debug('Command line')
-    debug(f'python {" ".join(sys.argv)}')
+    # debug('Command line')
+    # debug(f'python {" ".join(sys.argv)}')
 
     # Print args
-    debug('Args')
-    debug(args)
+    # debug('Args')
+    # debug(args)
 
     # Save args
     makedirs(args.save_dir)
