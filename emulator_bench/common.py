@@ -271,6 +271,11 @@ def _molgraph_cache_root(cache_dir: str | None = None) -> Path:
     return root
 
 
+def molgraph_cache_path(csv_path: str | Path, cache_dir: str | None = None) -> Path:
+    """Return the expected on-disk MolGraph cache path for a split CSV."""
+    return _molgraph_cache_root(cache_dir) / f"{Path(csv_path).stem}.{_file_signature(csv_path)}.pkl"
+
+
 def _collect_smiles_from_csv(csv_path: str | Path, smiles_columns: list[str]) -> set[str]:
     smiles_set: set[str] = set()
     with open(csv_path) as f:

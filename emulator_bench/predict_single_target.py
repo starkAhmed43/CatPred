@@ -3,6 +3,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import torch
 
 from bench_amp import install_amp_patches
 from bench_dataloader import install_dataloader_patches
@@ -68,6 +69,15 @@ def evaluate_predictions_csv(
     from catpred.train.make_predictions import load_model, set_features
     from catpred.train.predict import predict
 
+    device_text = str(device).lower()
+    use_cuda = device_text.startswith("cuda")
+    gpu_index = 0
+    if use_cuda and ":" in device_text:
+        try:
+            gpu_index = int(device_text.split(":", 1)[1])
+        except Exception:
+            gpu_index = 0
+
     if loaded_bundle is None:
         pred_argv = [
             "--test_path", input_csv,
@@ -76,9 +86,12 @@ def evaluate_predictions_csv(
             "--protein_records_path", protein_records_path,
             "--batch_size", str(batch_size),
             "--num_workers", str(num_workers),
-            "--device", device,
             "--drop_extra_columns",
         ]
+        if use_cuda:
+            pred_argv.extend(["--gpu", str(gpu_index)])
+        else:
+            pred_argv.append("--no_cuda")
         pred_argv.extend(["--smiles_columns", *smiles_columns])
         pred_args = PredictArgs().parse_args(pred_argv)
         pred_args, train_args, models, scaler_sets, num_tasks, task_names = load_model(pred_args, generator=False)
@@ -89,7 +102,7 @@ def evaluate_predictions_csv(
     pred_args.test_path = input_csv
     pred_args.batch_size = batch_size
     pred_args.num_workers = num_workers
-    pred_args.device = device
+    pred_args.device = torch.device("cuda", gpu_index) if use_cuda else torch.device("cpu")
 
     test_data = get_data(
         path=input_csv,

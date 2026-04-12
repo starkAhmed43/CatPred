@@ -156,7 +156,7 @@ def predict_and_save(
     :param test_data_loader: A :class:`~catpred.data.MoleculeDataLoader` to load the test data.
     :param full_data:  A :class:`~catpred.data.MoleculeDataset` containing all (valid and invalid) datapoints.
     :param full_to_valid_indices: A dictionary dictionary mapping full to valid indices.
-    :param models: A list or generator object of :class:`~catpred.models.MoleculeModel`\ s.
+    :param models: A list or generator object of :class:`~catpred.models.MoleculeModel` objects.
     :param scalers: A list or generator object of :class:`~catpred.features.scaler.StandardScaler` objects.
     :param num_models: The number of models included in the models and scalers input.
     :param calibrator: A :class: `~catpred.uncertainty.UncertaintyCalibrator` object, for use in calibrating uncertainty predictions.

@@ -22,6 +22,7 @@ from common import (
     materialize_tabular_as_csv,
     maybe_set_cache_env,
     load_molgraph_cache,
+    molgraph_cache_path,
     save_molgraph_cache,
     warm_molgraph_cache,
     write_json,
@@ -268,11 +269,18 @@ def main():
     args.protein_records_path = protein_records_path
 
     if not args.disable_molgraph_disk_cache:
+        train_cache_file = molgraph_cache_path(train_csv, args.cache_dir)
+        val_cache_file = molgraph_cache_path(val_csv, args.cache_dir)
+        test_cache_file = molgraph_cache_path(test_csv, args.cache_dir)
+
         loaded_train = load_molgraph_cache(train_csv, args.smiles_columns, args.cache_dir)
         loaded_val = load_molgraph_cache(val_csv, args.smiles_columns, args.cache_dir)
         loaded_test = load_molgraph_cache(test_csv, args.smiles_columns, args.cache_dir)
         print(
             "[bench] molgraph_cache "
+            f"files train={'hit' if train_cache_file.exists() else 'miss'} "
+            f"val={'hit' if val_cache_file.exists() else 'miss'} "
+            f"test={'hit' if test_cache_file.exists() else 'miss'} | "
             f"loaded train={loaded_train} val={loaded_val} test={loaded_test}",
             flush=True,
         )
@@ -327,9 +335,19 @@ def main():
         "--protein_records_path", protein_records_path,
         "--batch_size", str(args.batch_size),
         "--num_workers", str(args.num_workers),
-        "--device", args.device,
         "--drop_extra_columns",
     ]
+    device_text = str(args.device).lower()
+    if device_text.startswith("cuda"):
+        gpu_index = 0
+        if ":" in device_text:
+            try:
+                gpu_index = int(device_text.split(":", 1)[1])
+            except Exception:
+                gpu_index = 0
+        pred_argv.extend(["--gpu", str(gpu_index)])
+    else:
+        pred_argv.append("--no_cuda")
     pred_argv.extend(["--smiles_columns", *args.smiles_columns])
     pred_args = PredictArgs().parse_args(pred_argv)
     pred_bundle = load_model(pred_args, generator=False)
