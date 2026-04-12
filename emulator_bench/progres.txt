@@ -1,0 +1,17 @@
+python emulator_bench/tune_optuna.py \
+  --base_dir /home/ubuntu/adhil/EMULaToR/data/processed/baselines/catpred \
+  --split_groups enzyme_sequence_splits \
+  --thresholds threshold_0.09 \
+  --metric RMSE \
+  --metric_name rmse \
+  --eval_split val \
+  --epochs 25 \
+  --val_every_n_epochs 2 \
+  --n_trials 30 \
+  --batch_size 192 \
+  --num_workers 4 \
+  --n_parallel_trials 1 \
+  --storage sqlite:////home/ubuntu/adhil/EMULaToR/data/processed/baselines/catpred/optuna_enz_seq_0_09.db \
+  --study_name catpred_enz_seq_0_09_rmse \
+  --cache_dir /home/ubuntu/adhil/EMULaToR/data/processed/baselines/catpred/embeddings \
+  --require_cached_esm
