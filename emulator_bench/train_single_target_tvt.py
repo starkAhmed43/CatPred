@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pandas as pd
 
+os.environ["TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD"] = "1"
+
 from bench_amp import install_amp_patches
 from bench_dataloader import install_dataloader_patches
 from bench_fast_loader import INLINE_PROTEIN_SENTINEL, install_bench_patches

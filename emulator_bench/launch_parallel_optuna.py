@@ -1,7 +1,10 @@
 import argparse
+import os
 import subprocess
 import sys
 from pathlib import Path
+
+os.environ["TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD"] = "1"
 
 from common import REPO_ROOT, default_cache_dir
 

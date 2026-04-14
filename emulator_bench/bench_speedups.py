@@ -5,6 +5,8 @@ import torch
 import torch.nn as nn
 from torch.nn.utils.rnn import pad_sequence
 
+os.environ["TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD"] = "1"
+
 from bench_feature_cache import get_or_compute_esm, load_cached_esm
 
 
@@ -114,7 +116,11 @@ def install_model_speed_patches() -> None:
             self.pretrained_egnn_feats_dict = feats_dict
             self.pretrained_egnn_feats_avg = feats_avg
 
-        self.rotary_embedder = RotaryEmbedding(dim=args.seq_embed_dim // 4)
+        # Keep rotary dimension even to match core CatPred and avoid cache shape mismatches.
+        rotary_dim = max(2, args.seq_embed_dim // 4)
+        if rotary_dim % 2 != 0:
+            rotary_dim -= 1
+        self.rotary_embedder = RotaryEmbedding(dim=rotary_dim)
         self.multihead_attn = nn.MultiheadAttention(
             args.seq_embed_dim,
             args.seq_self_attn_nheads,

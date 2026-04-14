@@ -9,6 +9,8 @@ import optuna
 import pandas as pd
 from tqdm.auto import tqdm
 
+os.environ["TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD"] = "1"
+
 from common import REPO_ROOT, default_cache_dir, discover_threshold_dirs, ensure_split_triplet, materialize_tabular_as_csv, write_json
 
 

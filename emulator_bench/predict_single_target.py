@@ -1,9 +1,12 @@
 import argparse
+import os
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import torch
+
+os.environ["TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD"] = "1"
 
 from bench_amp import install_amp_patches
 from bench_dataloader import install_dataloader_patches

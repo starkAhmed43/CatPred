@@ -1,11 +1,14 @@
 import argparse
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
 
 import pandas as pd
 from tqdm.auto import tqdm
+
+os.environ["TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD"] = "1"
 
 from common import (
     REPO_ROOT,
