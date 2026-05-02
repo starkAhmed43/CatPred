@@ -4,6 +4,7 @@ import os
 import subprocess
 import sys
 import time
+import threading
 from collections import deque
 from pathlib import Path
 
@@ -17,6 +18,19 @@ from common import REPO_ROOT, default_cache_dir, discover_threshold_dirs, ensure
 
 BUILD_SCRIPT = REPO_ROOT / "emulator_bench" / "build_tvt_data.py"
 TRAIN_SCRIPT = REPO_ROOT / "emulator_bench" / "train_single_target_tvt.py"
+
+
+def _stream_worker_output(pipe, log_file, prefix: str):
+    try:
+        for line in iter(pipe.readline, ""):
+            if line == "":
+                break
+            log_file.write(line)
+            log_file.flush()
+            sys.stdout.write(f"{prefix} {line}")
+            sys.stdout.flush()
+    finally:
+        pipe.close()
 
 
 def resolve_value_root(base_dir: str, value_type: str) -> Path:
@@ -125,6 +139,10 @@ def launch_train(job, seed, gpu_id, hp, run_root: Path, args):
     ]
     if args.final_epoch_metrics_only:
         cmd.append("--final_epoch_metrics_only")
+    if args.cpu_threads is not None:
+        cmd.extend(["--cpu_threads", str(args.cpu_threads)])
+    if args.interop_threads is not None:
+        cmd.extend(["--interop_threads", str(args.interop_threads)])
     if args.smart_batching:
         cmd.append("--smart_batching")
     if args.disable_pin_memory:
@@ -140,9 +158,27 @@ def launch_train(job, seed, gpu_id, hp, run_root: Path, args):
     if args.passthrough:
         cmd.extend(args.passthrough)
 
-    log_file = open(log_path, "a")
-    proc = subprocess.Popen(cmd, cwd=str(REPO_ROOT), stdout=log_file, stderr=subprocess.STDOUT)
-    return proc, log_file, out_dir, split_group, threshold, seed, gpu_id
+    log_file = open(log_path, "a", buffering=1)
+    stream_thread = None
+    if args.verbose_workers:
+        proc = subprocess.Popen(
+            cmd,
+            cwd=str(REPO_ROOT),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+        prefix = f"[gpu={gpu_id} seed={seed} {split_group}/{threshold}]"
+        stream_thread = threading.Thread(
+            target=_stream_worker_output,
+            args=(proc.stdout, log_file, prefix),
+            daemon=True,
+        )
+        stream_thread.start()
+    else:
+        proc = subprocess.Popen(cmd, cwd=str(REPO_ROOT), stdout=log_file, stderr=subprocess.STDOUT, text=True)
+    return proc, log_file, stream_thread, out_dir, split_group, threshold, seed, gpu_id
 
 
 def collect_metrics(out_dir: Path):
@@ -189,11 +225,13 @@ def main():
     parser.add_argument("--final_lr", default=1e-4, type=float)
     parser.add_argument("--warmup_epochs", default=2.0, type=float)
     parser.add_argument("--dropout", default=0.0, type=float)
-    parser.add_argument("--ensemble_size", default=1, type=int)
+    parser.add_argument("--ensemble_size", default=10, type=int)
     parser.add_argument("--num_workers", default=4, type=int)
     parser.add_argument("--grad_accum_steps", default=1, type=int)
     parser.add_argument("--cache_cutoff", default="inf", type=str)
     parser.add_argument("--prefetch_factor", default=4, type=int)
+    parser.add_argument("--cpu_threads", default=None, type=int)
+    parser.add_argument("--interop_threads", default=None, type=int)
     parser.add_argument("--disable_pin_memory", action="store_true")
     parser.add_argument("--disable_persistent_workers", action="store_true")
     parser.add_argument("--smart_batching", action="store_true")
@@ -206,6 +244,7 @@ def main():
     parser.add_argument("--early_stopping_min_delta", default=0.0, type=float)
     parser.add_argument("--metric_name", default="rmse", type=str)
     parser.add_argument("--disable_tf32", action="store_true")
+    parser.add_argument("--verbose_workers", action="store_true")
     parser.add_argument("--dry_run", action="store_true")
     args, passthrough = parser.parse_known_args()
     args.passthrough = passthrough
@@ -255,12 +294,14 @@ def main():
             print(f"[launch] gpu={gpu_id} split={job['split_group']} threshold={job['threshold']} seed={seed}")
 
         still_running = []
-        for proc, log_file, out_dir, split_group, threshold, seed, gpu_id in running:
+        for proc, log_file, stream_thread, out_dir, split_group, threshold, seed, gpu_id in running:
             code = proc.poll()
             if code is None:
-                still_running.append((proc, log_file, out_dir, split_group, threshold, seed, gpu_id))
+                still_running.append((proc, log_file, stream_thread, out_dir, split_group, threshold, seed, gpu_id))
                 continue
 
+            if stream_thread is not None:
+                stream_thread.join(timeout=5)
             log_file.close()
             free_gpus.append(gpu_id)
             row = {

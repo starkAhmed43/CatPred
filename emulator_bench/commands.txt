@@ -41,8 +41,9 @@ python emulator_bench/train_single_target_tvt.py \
   --smiles_columns smiles \
   --target_columns log10_value \
   --seed 42 \
-  --epochs 25 \
-  --batch_size 32 \
+  --epochs 30 \
+  --batch_size 16 \
+  --ensemble_size 10 \
   --num_workers 8 \
   --device cuda:0 \
   --mixed_precision auto \
@@ -66,7 +67,7 @@ python emulator_bench/train_single_target_tvt.py \
 python emulator_bench/predict_single_target.py \
   --input_csv ~/github/EMULaToR/data/processed/baselines/CatPred/enzyme_sequence_splits/threshold_0.09/test.parquet \
   --sequence_col sequence \
-  --uniprot_id_col uniprot_id \
+  --uniprot_id_col pdbs \
   --checkpoint_dir ~/github/EMULaToR/data/processed/baselines/CatPred/manual_runs/enz_seq_0_09/seed_42/fold_0 \
   --out_csv ~/github/EMULaToR/data/processed/baselines/CatPred/manual_runs/enz_seq_0_09/seed_42/test_preds.csv \
   --metrics_csv ~/github/EMULaToR/data/processed/baselines/CatPred/manual_runs/enz_seq_0_09/seed_42/test_metrics.csv \
@@ -81,11 +82,12 @@ CUDA_VISIBLE_DEVICES=0 python emulator_bench/run_split_benchmarks.py \
   --thresholds threshold_0.09 threshold_0.1 threshold_0.3 \
   --seeds 42 43 44 \
   --sequence_col sequence \
-  --uniprot_id_col uniprot_id \
+  --uniprot_id_col pdbs \
   --smiles_columns smiles \
   --target_columns log10_value \
-  --epochs 25 \
-  --batch_size 192 \
+  --epochs 30 \
+  --batch_size 16 \
+  --ensemble_size 10 \
   --num_workers 8 \
   --device cuda:0 \
   --mixed_precision auto \
@@ -107,10 +109,11 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 python emulator_bench/tune_optuna.py \
   --metric RMSE \
   --metric_name rmse \
   --eval_split val \
-  --epochs 25 \
+  --epochs 30 \
   --val_every_n_epochs 2 \
   --n_trials 30 \
-  --batch_size 48 \
+  --batch_size 16 \
+  --ensemble_size 10 \
   --num_workers 2 \
   --smart_batching \
   --ram_budget_gb 90 \
@@ -136,10 +139,10 @@ python emulator_bench/launch_parallel_optuna.py \
   --threshold threshold_0.09 \
   --metric rmse \
   --eval_split val \
-  --epochs 25 \
+  --epochs 30 \
   --val_every 2 \
   --n_trials 30 \
-  --batch_size 192 \
+  --batch_size 16 \
   --num_workers 8 \
   --pin_memory \
   --storage sqlite:///~/github/EMULaToR/data/processed/baselines/CatPred/optuna_enz_seq_0_09.db \
@@ -156,7 +159,8 @@ python emulator_bench/retrain_from_optuna_best.py \
   --study_name catpred_enz_seq_0_09_rmse \
   --run_name retrain_from_optuna_enz_seq_0_09 \
   --task_name catpred \
-  --epochs 25 \
+  --epochs 30 \
+  --ensemble_size 10 \
   --num_workers 8 \
   --metric_name rmse \
   --val_every_n_epochs 2 \
@@ -180,6 +184,65 @@ python emulator_bench/retrain_from_optuna_best.py \
   --gpus 0 1 \
   --best_hparams_json ~/github/EMULaToR/data/processed/baselines/CatPred/optuna_studies/catpred_enz_seq_0_09_rmse_best_hparams.json \
   --run_name retrain_from_best_json
+
+# 8b) Retrain using original CatPred hparams (no Optuna DB required)
+python emulator_bench/retrain_from_optuna_best.py \
+  --base_dir ~/github/EMULaToR/data/processed/baselines/CatPred \
+  --split_groups enzyme_sequence_splits \
+  --thresholds threshold_0.09 \
+  --seeds 42 43 44 \
+  --gpus 0 1 2 \
+  --best_hparams_json ~/github/EMULaToR/data/processed/baselines/CatPred/original_catpred_retrain_hparams.json \
+  --run_name retrain_original_catpred_no_ensemble \
+  --task_name catpred \
+  --epochs 30 \
+  --ensemble_size 1 \
+  --sequence_col sequence \
+  --uniprot_id_col pdbs \
+  --smiles_columns smiles \
+  --target_columns log10_value \
+  --cache_dir ~/github/EMULaToR/data/processed/baselines/CatPred/embeddings \
+  --require_cached_esm \
+  --add_esm_feats \
+  --loss_function mve \
+  --seq_embed_dim 36 \
+  --seq_self_attn_nheads 6 \
+  --lr_scheduler noam \
+  --optimizer_fused off \
+  --add_pretrained_egnn_feats \
+  --pretrained_egnn_feats_path ~/github/EMULaToR/data/processed/baselines/CatPred/embeddings/progres_all_pdb_embeddings_dict.pt \
+  --cpu_threads 4 \
+  --interop_threads 1 \
+  --verbose_workers
+
+python emulator_bench/retrain_from_optuna_best.py \
+  --base_dir ~/github/EMULaToR/data/processed/baselines/CatPred \
+  --split_groups substrate_splits \
+  --thresholds threshold_0.3 \
+  --seeds 42 43 44 \
+  --gpus 0 1 2 \
+  --best_hparams_json ~/github/EMULaToR/data/processed/baselines/CatPred/original_catpred_retrain_hparams.json \
+  --run_name retrain_original_catpred_no_ensemble \
+  --task_name catpred \
+  --epochs 30 \
+  --ensemble_size 1 \
+  --sequence_col sequence \
+  --uniprot_id_col pdbs \
+  --smiles_columns smiles \
+  --target_columns log10_value \
+  --cache_dir ~/github/EMULaToR/data/processed/baselines/CatPred/embeddings \
+  --require_cached_esm \
+  --add_esm_feats \
+  --loss_function mve \
+  --seq_embed_dim 36 \
+  --seq_self_attn_nheads 6 \
+  --lr_scheduler noam \
+  --optimizer_fused off \
+  --add_pretrained_egnn_feats \
+  --pretrained_egnn_feats_path ~/github/EMULaToR/data/processed/baselines/CatPred/embeddings/progres_all_pdb_embeddings_dict.pt \
+  --cpu_threads 4 \
+  --interop_threads 1 \
+  --verbose_workers
 
 # 9) Useful optional passthrough for structure embeddings (if you have a precomputed Progres/EGNN dict)
 # Append these to train/tune/retrain commands above:

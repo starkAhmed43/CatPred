@@ -238,6 +238,45 @@ def configure_torch_runtime(device: str, enable_tf32: bool = True) -> None:
     if hasattr(torch.backends, "cudnn"):
         torch.backends.cudnn.benchmark = True
 
+    # Explicitly enable the scaled-dot-product attention backends when available.
+    # Bench protein attention does not require attention weights, so these kernels
+    # can reduce memory traffic and improve GPU utilization.
+    if hasattr(torch.backends, "cuda"):
+        if hasattr(torch.backends.cuda, "enable_flash_sdp"):
+            torch.backends.cuda.enable_flash_sdp(True)
+        if hasattr(torch.backends.cuda, "enable_mem_efficient_sdp"):
+            torch.backends.cuda.enable_mem_efficient_sdp(True)
+        if hasattr(torch.backends.cuda, "enable_math_sdp"):
+            torch.backends.cuda.enable_math_sdp(True)
+
+
+def configure_cpu_runtime(
+    num_threads: int | None = None,
+    interop_threads: int | None = None,
+) -> None:
+    import torch
+
+    if num_threads is not None:
+        value = max(1, int(num_threads))
+        for name in (
+            "OMP_NUM_THREADS",
+            "MKL_NUM_THREADS",
+            "OPENBLAS_NUM_THREADS",
+            "NUMEXPR_NUM_THREADS",
+            "VECLIB_MAXIMUM_THREADS",
+            "BLIS_NUM_THREADS",
+        ):
+            os.environ[name] = str(value)
+        torch.set_num_threads(value)
+
+    if interop_threads is not None:
+        value = max(1, int(interop_threads))
+        os.environ["TORCH_NUM_INTEROP_THREADS"] = str(value)
+        try:
+            torch.set_num_interop_threads(value)
+        except RuntimeError:
+            pass
+
 
 def load_json(path: Path):
     with open(path) as f:

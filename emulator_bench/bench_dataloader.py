@@ -7,6 +7,7 @@ from pathlib import Path
 from random import Random
 
 from torch.utils.data import DataLoader, Sampler
+from tqdm import tqdm
 
 from common import default_cache_dir
 
@@ -300,10 +301,15 @@ def install_dataloader_patches(
                             for i in range(0, len(indices), self._batch_size)
                         ]
 
-                    cached_batches = [
-                        construct_molecule_batch([self._dataset[idx] for idx in batch_indices])
-                        for batch_indices in index_batches
-                    ]
+                    cached_batches = []
+                    for batch_indices in tqdm(
+                        index_batches,
+                        desc="[bench] batch_graph_cache build",
+                        leave=False,
+                    ):
+                        cached_batches.append(
+                            construct_molecule_batch([self._dataset[idx] for idx in batch_indices])
+                        )
                     _CACHED_BATCHES_BY_KEY[inmem_cache_key] = cached_batches
                     if disk_cache_path is not None:
                         _save_disk_batch_cache(disk_cache_path, cached_batches)

@@ -202,7 +202,7 @@ def install_model_speed_patches() -> None:
                 seq_outs = self.seq_embedder(seq_arr)
                 q = self.rotary_embedder.rotate_queries_or_keys(seq_outs, seq_dim=1)
                 k = self.rotary_embedder.rotate_queries_or_keys(seq_outs, seq_dim=1)
-                seq_outs, _ = self.multihead_attn(q, k, seq_outs)
+                seq_outs, _ = self.multihead_attn(q, k, seq_outs, need_weights=False)
 
                 if self.args.add_esm_feats:
                     seq_outs = torch.cat([esm_feature_arr, seq_outs], dim=-1)

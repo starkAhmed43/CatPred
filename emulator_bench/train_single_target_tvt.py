@@ -17,6 +17,7 @@ from bench_scheduler import install_scheduler_patches
 from bench_speedups import install_model_speed_patches
 from bench_training_control import install_training_control_patches
 from common import (
+    configure_cpu_runtime,
     configure_esm_cache_policy,
     configure_torch_runtime,
     default_cache_dir,
@@ -69,6 +70,17 @@ def build_catpred_train_argv(args):
         "--num_workers", str(args.num_workers),
         "--cache_cutoff", str(args.cache_cutoff),
     ]
+    device_text = str(args.device).lower()
+    if device_text.startswith("cuda"):
+        gpu_index = 0
+        if ":" in device_text:
+            try:
+                gpu_index = int(device_text.split(":", 1)[1])
+            except Exception:
+                gpu_index = 0
+        argv.extend(["--gpu", str(gpu_index)])
+    else:
+        argv.append("--no_cuda")
     argv.extend(["--smiles_columns", *args.smiles_columns])
     argv.extend(["--target_columns", *args.target_columns])
     argv.extend(["--extra_metrics", *args.extra_metrics])
@@ -172,7 +184,7 @@ def main():
     parser.add_argument("--final_lr", default=1e-4, type=float)
     parser.add_argument("--warmup_epochs", default=2.0, type=float)
     parser.add_argument("--dropout", default=0.0, type=float)
-    parser.add_argument("--ensemble_size", default=1, type=int)
+    parser.add_argument("--ensemble_size", default=10, type=int)
     parser.add_argument("--num_workers", default=4, type=int)
     parser.add_argument("--grad_accum_steps", default=1, type=int)
     parser.add_argument("--cache_cutoff", default="inf", type=str)
@@ -199,6 +211,8 @@ def main():
     parser.add_argument("--disable_low_ram_mode", action="store_true")
     parser.add_argument("--esm_mem_cache_max", default=None, type=int)
     parser.add_argument("--ram_budget_gb", default=90.0, type=float)
+    parser.add_argument("--cpu_threads", default=None, type=int)
+    parser.add_argument("--interop_threads", default=None, type=int)
     parser.add_argument("--disable_tf32", action="store_true")
     parser.add_argument("--resume_if_complete", action="store_true")
     parser.add_argument("--resume_marker_split", choices=["train", "val", "test"], default="test")
@@ -217,6 +231,10 @@ def main():
         return
 
     maybe_set_cache_env(args.cache_dir)
+    configure_cpu_runtime(
+        num_threads=args.cpu_threads,
+        interop_threads=args.interop_threads,
+    )
     effective_esm_mem_cache_max = args.esm_mem_cache_max
     if effective_esm_mem_cache_max is None:
         effective_esm_mem_cache_max = _auto_esm_mem_cache_max(args.ram_budget_gb)

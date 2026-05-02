@@ -179,7 +179,7 @@ def main():
     parser.add_argument("--final_lr", default=1e-4, type=float)
     parser.add_argument("--warmup_epochs", default=2.0, type=float)
     parser.add_argument("--dropout", default=0.0, type=float)
-    parser.add_argument("--ensemble_size", default=1, type=int)
+    parser.add_argument("--ensemble_size", default=10, type=int)
     parser.add_argument("--num_workers", default=4, type=int)
     parser.add_argument("--grad_accum_steps", default=1, type=int)
     parser.add_argument("--cache_cutoff", default="inf", type=str)
