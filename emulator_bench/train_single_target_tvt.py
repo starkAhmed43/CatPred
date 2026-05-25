@@ -92,6 +92,8 @@ def build_catpred_train_argv(args):
         argv.append("--add_esm_feats")
     if args.add_pretrained_egnn_feats:
         argv.extend(["--add_pretrained_egnn_feats", "--pretrained_egnn_feats_path", args.pretrained_egnn_feats_path])
+    if args.low_ram_mode or args.cache_batch_graphs:
+        argv.append("--no_cache_mol")
     return argv
 
 
@@ -104,10 +106,10 @@ def write_metrics_bundle(out_dir: Path, split_name: str, pred_label_df: pd.DataF
 def _auto_esm_mem_cache_max(ram_budget_gb: float) -> int:
     # Keep ESM in-memory cache large enough to reduce disk churn while staying within host RAM headroom.
     safe_budget_gb = max(8.0, float(ram_budget_gb))
-    cache_budget_mb = safe_budget_gb * 1024.0 * 0.35
+    cache_budget_mb = safe_budget_gb * 1024.0 * 0.05
     per_entry_mb = 2.0
     estimated_entries = int(cache_budget_mb / per_entry_mb)
-    return max(512, min(32768, estimated_entries))
+    return max(64, min(1024, estimated_entries))
 
 
 def _effective_low_ram_mode(args) -> bool:
@@ -308,22 +310,11 @@ def main():
     args.test_csv = test_csv
     args.protein_records_path = protein_records_path
 
+    skip_molgraph_memory_load = bool(args.cache_batch_graphs and args.strict_precompute)
     if not args.disable_molgraph_disk_cache:
         train_cache_file = molgraph_cache_path(train_csv, args.cache_dir)
         val_cache_file = molgraph_cache_path(val_csv, args.cache_dir)
         test_cache_file = molgraph_cache_path(test_csv, args.cache_dir)
-
-        loaded_train = load_molgraph_cache(train_csv, args.smiles_columns, args.cache_dir)
-        loaded_val = load_molgraph_cache(val_csv, args.smiles_columns, args.cache_dir)
-        loaded_test = load_molgraph_cache(test_csv, args.smiles_columns, args.cache_dir)
-        print(
-            "[bench] molgraph_cache "
-            f"files train={'hit' if train_cache_file.exists() else 'miss'} "
-            f"val={'hit' if val_cache_file.exists() else 'miss'} "
-            f"test={'hit' if test_cache_file.exists() else 'miss'} | "
-            f"loaded train={loaded_train} val={loaded_val} test={loaded_test}",
-            flush=True,
-        )
 
         if args.strict_precompute and not (train_cache_file.exists() and val_cache_file.exists() and test_cache_file.exists()):
             missing = [
@@ -336,7 +327,24 @@ def main():
                 f"Missing: {missing}. Run emulator_bench/precompute_features.py first."
             )
 
-        if not args.strict_precompute and (loaded_train + loaded_val + loaded_test) == 0:
+        if skip_molgraph_memory_load:
+            loaded_train = loaded_val = loaded_test = 0
+            loaded_note = "skipped_memory_load=batch_graph_cache_strict"
+        else:
+            loaded_train = load_molgraph_cache(train_csv, args.smiles_columns, args.cache_dir)
+            loaded_val = load_molgraph_cache(val_csv, args.smiles_columns, args.cache_dir)
+            loaded_test = load_molgraph_cache(test_csv, args.smiles_columns, args.cache_dir)
+            loaded_note = f"loaded train={loaded_train} val={loaded_val} test={loaded_test}"
+        print(
+            "[bench] molgraph_cache "
+            f"files train={'hit' if train_cache_file.exists() else 'miss'} "
+            f"val={'hit' if val_cache_file.exists() else 'miss'} "
+            f"test={'hit' if test_cache_file.exists() else 'miss'} | "
+            f"{loaded_note}",
+            flush=True,
+        )
+
+        if not args.strict_precompute and not skip_molgraph_memory_load and (loaded_train + loaded_val + loaded_test) == 0:
             warmed = warm_molgraph_cache(
                 [train_csv, val_csv, test_csv],
                 args.smiles_columns,
@@ -355,7 +363,7 @@ def main():
         _run_single_training(parsed_args, run_training)
     finally:
         sys.argv = old_argv
-        if not args.disable_molgraph_disk_cache:
+        if not args.disable_molgraph_disk_cache and not skip_molgraph_memory_load:
             saved_train = save_molgraph_cache(train_csv, args.smiles_columns, args.cache_dir)
             saved_val = save_molgraph_cache(val_csv, args.smiles_columns, args.cache_dir)
             saved_test = save_molgraph_cache(test_csv, args.smiles_columns, args.cache_dir)
@@ -364,6 +372,8 @@ def main():
                 f"saved train={saved_train} val={saved_val} test={saved_test}",
                 flush=True,
             )
+        elif skip_molgraph_memory_load:
+            print("[bench] molgraph_cache saved skipped=batch_graph_cache_strict", flush=True)
 
     ckpt_dir = _checkpoint_dir(out_dir)
     write_json(out_dir / "bestmodel_dir.json", {"checkpoint_dir": str(ckpt_dir)})

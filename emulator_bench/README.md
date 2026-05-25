@@ -90,6 +90,8 @@ The default JSON records the paper ensemble setting (`ensemble_size=10`). For on
 
 The launcher defaults to `--cpu_threads 2 --interop_threads 1` for each training subprocess and exports the matching OpenMP/BLAS environment variables before Python starts. This prevents six parallel GPU runs from each spawning very large CPU thread pools. With batch-graph caches enabled, training collation forces `num_workers=0`; keep `--num_workers 0` unless you intentionally want worker processes during post-fit evaluation.
 
+For lower host RAM, use `--esm_mem_cache_max 128` and keep `--max_parallel_per_gpu` modest. In strict batch-cache mode, the train wrapper skips loading full MolGraph caches into process memory and disables CatPred's RDKit molecule cache, because the prebuilt BatchMolGraph cache is already the training input.
+
 Resumability:
 
 - alignment, ESM, proGRES, dataset, MolGraph, and BatchMolGraph caches skip completed artifacts
@@ -98,6 +100,7 @@ Resumability:
 - restart resumes unfinished ensemble members from the last completed epoch
 - Ctrl+C or SIGTERM cancels pending work and terminates active precompute workers or training subprocess groups; partial manifests are written where possible
 - `kill_bench.py` lists matching bench processes by default and terminates them only with `--yes`
+- failed training subprocesses are recorded in `catpred_parallel_retrain_manifest.json`; other jobs continue unless `--fail_fast` is passed
 
 ## Optuna
 

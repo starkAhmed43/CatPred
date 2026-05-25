@@ -398,6 +398,8 @@ def _train_command(job: dict, seed: int, args, hparams: dict) -> tuple[list[str]
         cmd.extend(["--cpu_threads", str(args.cpu_threads)])
     if args.interop_threads is not None:
         cmd.extend(["--interop_threads", str(args.interop_threads)])
+    if args.esm_mem_cache_max is not None:
+        cmd.extend(["--esm_mem_cache_max", str(args.esm_mem_cache_max)])
     return cmd, out_dir
 
 
@@ -428,7 +430,24 @@ def _run_train_job(item) -> dict:
     env["CUDA_VISIBLE_DEVICES"] = str(gpu)
     env["TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD"] = "1"
     label = f"train gpu={gpu} out={out_dir}"
-    _run_subprocess(cmd, env, label)
+    try:
+        _run_subprocess(cmd, env, label)
+    except subprocess.CalledProcessError as exc:
+        returncode = int(exc.returncode)
+        result = {
+            "out_dir": str(out_dir),
+            "gpu": gpu,
+            "status": "failed",
+            "returncode": returncode,
+            "cmd": " ".join(str(part) for part in cmd),
+        }
+        if returncode < 0:
+            result["signal"] = -returncode
+            try:
+                result["signal_name"] = signal.Signals(-returncode).name
+            except ValueError:
+                result["signal_name"] = f"SIG{returncode * -1}"
+        return result
     return {"out_dir": str(out_dir), "gpu": gpu, "status": "completed"}
 
 
@@ -476,6 +495,7 @@ def main() -> None:
     parser.add_argument("--prefetch_factor", default=2, type=int)
     parser.add_argument("--cpu_threads", default=2, type=int)
     parser.add_argument("--interop_threads", default=1, type=int)
+    parser.add_argument("--esm_mem_cache_max", default=256, type=int)
     parser.add_argument("--mixed_precision", choices=["auto", "none", "bf16", "fp16"], default="auto")
     parser.add_argument("--optimizer_fused", choices=["auto", "on", "off"], default="auto")
     parser.add_argument("--lr_scheduler", choices=["cosine_warmup", "noam"], default="cosine_warmup")
@@ -497,6 +517,7 @@ def main() -> None:
     parser.add_argument("--precompute_jobs", default=max(1, min(4, (os.cpu_count() or 4) // 4)), type=int)
     parser.add_argument("--precompute_max_tasks_per_child", default=1, type=int)
     parser.add_argument("--limit_rows", default=None, type=int)
+    parser.add_argument("--fail_fast", action="store_true", help="Stop all active jobs after the first failed training subprocess.")
     parser.add_argument("--dry_run", action="store_true")
     argv = sys.argv[1:]
     args = parser.parse_args(argv)
@@ -540,7 +561,23 @@ def main() -> None:
     try:
         futures = [executor.submit(_run_train_job, item) for item in train_items]
         for future in tqdm(concurrent.futures.as_completed(futures), total=len(futures), desc="Retrain", unit="job"):
-            results.append(future.result())
+            result = future.result()
+            results.append(result)
+            if result.get("status") == "failed":
+                print(
+                    "[launch] job failed "
+                    f"gpu={result.get('gpu')} out={result.get('out_dir')} "
+                    f"returncode={result.get('returncode')} "
+                    f"signal={result.get('signal_name', '')}",
+                    flush=True,
+                )
+                if args.fail_fast:
+                    stopped = True
+                    _STOP_REQUESTED.set()
+                    for pending in futures:
+                        pending.cancel()
+                    _terminate_active_processes()
+                    break
         executor.shutdown(wait=True)
     except KeyboardInterrupt:
         stopped = True
@@ -560,6 +597,10 @@ def main() -> None:
     with manifest_path.open("w", encoding="utf-8") as handle:
         json.dump({"interrupted": stopped, "jobs": results}, handle, indent=2, sort_keys=True)
     print(f"[launch] wrote manifest: {manifest_path}", flush=True)
+    failed_jobs = sum(1 for result in results if result.get("status") == "failed")
+    if failed_jobs:
+        print(f"[launch] failed_jobs={failed_jobs}; completed jobs remain resumable", flush=True)
+        raise SystemExit(1)
     if stopped:
         raise SystemExit(130)
 

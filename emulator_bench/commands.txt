@@ -19,8 +19,9 @@ python -m pip install fair-esm \
 # 1) One-command default retraining.
 # Remove skip flags for any stage you want the launcher to rebuild.
 conda run -n mldb python emulator_bench/launch_parallel_retrain.py \
-  --gpus 0 1 \
+  --gpus 0 \
   --seeds 666 777 888 \
+  --value_types kcat km ki \
   --ensemble_size 1 \
   --run_name paper_defaults_single_model \
   --skip_align \
@@ -29,6 +30,7 @@ conda run -n mldb python emulator_bench/launch_parallel_retrain.py \
   --num_workers 0 \
   --cpu_threads 2 \
   --interop_threads 1 \
+  --esm_mem_cache_max 128 \
   --max_parallel_per_gpu 6
 
 # 2) Dry-run discovery without writes or training.
