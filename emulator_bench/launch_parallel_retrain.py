@@ -400,6 +400,8 @@ def _train_command(job: dict, seed: int, args, hparams: dict) -> tuple[list[str]
         cmd.extend(["--interop_threads", str(args.interop_threads)])
     if args.esm_mem_cache_max is not None:
         cmd.extend(["--esm_mem_cache_max", str(args.esm_mem_cache_max)])
+    if args.cuda_empty_cache_interval is not None:
+        cmd.extend(["--cuda_empty_cache_interval", str(args.cuda_empty_cache_interval)])
     return cmd, out_dir
 
 
@@ -496,6 +498,12 @@ def main() -> None:
     parser.add_argument("--cpu_threads", default=2, type=int)
     parser.add_argument("--interop_threads", default=1, type=int)
     parser.add_argument("--esm_mem_cache_max", default=256, type=int)
+    parser.add_argument(
+        "--cuda_empty_cache_interval",
+        default=25,
+        type=int,
+        help="Call torch.cuda.empty_cache() every N batches inside training subprocesses. Use 0 to disable.",
+    )
     parser.add_argument("--mixed_precision", choices=["auto", "none", "bf16", "fp16"], default="auto")
     parser.add_argument("--optimizer_fused", choices=["auto", "on", "off"], default="auto")
     parser.add_argument("--lr_scheduler", choices=["cosine_warmup", "noam"], default="cosine_warmup")

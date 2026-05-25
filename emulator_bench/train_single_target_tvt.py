@@ -231,6 +231,12 @@ def main():
     parser.add_argument("--ram_budget_gb", default=90.0, type=float)
     parser.add_argument("--cpu_threads", default=None, type=int)
     parser.add_argument("--interop_threads", default=None, type=int)
+    parser.add_argument(
+        "--cuda_empty_cache_interval",
+        default=0,
+        type=int,
+        help="Call torch.cuda.empty_cache() every N batches in train/validation/predict loops. 0 disables it.",
+    )
     parser.add_argument("--disable_tf32", action="store_true")
     parser.add_argument("--resume_if_complete", action="store_true")
     parser.add_argument("--resume_marker_split", choices=["train", "val", "test"], default="test")
@@ -266,6 +272,7 @@ def main():
     os.environ["CATPRED_BENCH_RECOVER_MISSING_ESM"] = "0" if args.strict_precompute else "1"
     os.environ["CATPRED_BENCH_ESM_MEM_CACHE_MAX"] = str(max(1, int(effective_esm_mem_cache_max)))
     os.environ["CATPRED_BENCH_RAM_BUDGET_GB"] = str(max(1.0, float(args.ram_budget_gb)))
+    os.environ["CATPRED_BENCH_CUDA_EMPTY_CACHE_INTERVAL"] = str(max(0, int(args.cuda_empty_cache_interval)))
     configure_esm_cache_policy(
         overwrite_esm_cache=args.overwrite_esm_cache,
         require_cached_esm=args.require_cached_esm,

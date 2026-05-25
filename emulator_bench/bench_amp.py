@@ -35,6 +35,19 @@ def _autocast_context(device: torch.device, autocast_dtype=None):
     return nullcontext()
 
 
+def _cuda_empty_cache_interval() -> int:
+    raw = os.getenv("CATPRED_BENCH_CUDA_EMPTY_CACHE_INTERVAL", "0")
+    try:
+        return max(0, int(raw))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _maybe_empty_cuda_cache(batch_idx: int, interval: int) -> None:
+    if interval > 0 and torch.cuda.is_available() and (batch_idx + 1) % interval == 0:
+        torch.cuda.empty_cache()
+
+
 def install_amp_patches(mixed_precision: str = "auto") -> None:
     import catpred.train.evaluate as evaluate_module
     import catpred.train.run_training as run_training_module
@@ -107,6 +120,7 @@ def install_amp_patches(mixed_precision: str = "auto") -> None:
                 print(f"[bench] mixed_precision={precision_mode} -> {precision_label}", flush=True)
             model._bench_amp_logged = True
         grad_accum_steps = max(1, int(getattr(args, "grad_accum_steps", 1)))
+        empty_cache_interval = _cuda_empty_cache_interval()
         optimizer.zero_grad(set_to_none=True)
 
         pbar = tqdm(data_loader, total=len(data_loader), leave=False)
@@ -318,6 +332,8 @@ def install_amp_patches(mixed_precision: str = "auto") -> None:
                         for i, lr in enumerate(scheduler.get_lr()):
                             writer.add_scalar(f"learning_rate_{i}", lr, n_iter)
 
+            _maybe_empty_cuda_cache(batch_idx, empty_cache_interval)
+
         return n_iter
 
     def patched_predict(
@@ -345,8 +361,9 @@ def install_amp_patches(mixed_precision: str = "auto") -> None:
         device = next(model.parameters()).device
         precision_mode = getattr(predict_module, "_bench_mixed_precision_mode", "auto")
         autocast_dtype, _precision_label, _precision_device_index = resolve_mixed_precision(device, precision_mode)
+        empty_cache_interval = _cuda_empty_cache_interval()
 
-        for batch in tqdm(data_loader, disable=disable_progress_bar, leave=False):
+        for batch_idx, batch in enumerate(tqdm(data_loader, disable=disable_progress_bar, leave=False)):
             mol_batch = batch.batch_graph()
             features_batch = batch.features()
             atom_descriptors_batch = batch.atom_descriptors()
@@ -483,6 +500,8 @@ def install_amp_patches(mixed_precision: str = "auto") -> None:
                     lambdas.extend(batch_lambdas.tolist())
                     alphas.extend(batch_alphas.tolist())
                     betas.extend(batch_betas.tolist())
+
+            _maybe_empty_cuda_cache(batch_idx, empty_cache_interval)
 
         if model.is_atom_bond_targets:
             preds = [np.concatenate(x) for x in zip(*preds)]

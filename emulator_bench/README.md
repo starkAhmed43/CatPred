@@ -92,6 +92,8 @@ The launcher defaults to `--cpu_threads 2 --interop_threads 1` for each training
 
 For lower host RAM, use `--esm_mem_cache_max 128` and keep `--max_parallel_per_gpu` modest. In strict batch-cache mode, the train wrapper skips loading full MolGraph caches into process memory and disables CatPred's RDKit molecule cache, because the prebuilt BatchMolGraph cache is already the training input.
 
+For tighter VRAM when running many subprocesses on one GPU, use `--cuda_empty_cache_interval 25` or a smaller interval. This releases unused PyTorch CUDA allocator blocks during train, validation, and prediction loops; it cannot reduce live tensor memory, so persistent OOMs still require fewer parallel runs or a smaller batch size.
+
 Resumability:
 
 - alignment, ESM, proGRES, dataset, MolGraph, and BatchMolGraph caches skip completed artifacts

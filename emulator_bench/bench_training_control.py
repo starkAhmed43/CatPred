@@ -3,6 +3,7 @@ import os
 import random
 import sys
 import types
+from contextlib import nullcontext
 from logging import Logger
 from typing import Dict, List
 
@@ -121,6 +122,44 @@ def _env_flag(name: str, default: bool = False) -> bool:
     return str(raw).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _cuda_empty_cache_interval() -> int:
+    raw = os.getenv("CATPRED_BENCH_CUDA_EMPTY_CACHE_INTERVAL", "0")
+    try:
+        return max(0, int(raw))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _maybe_empty_cuda_cache(batch_idx: int, interval: int) -> None:
+    if interval > 0 and torch.cuda.is_available() and (batch_idx + 1) % interval == 0:
+        torch.cuda.empty_cache()
+
+
+def _resolve_autocast_dtype(args):
+    if str(getattr(args, "device", "")).lower().find("cuda") < 0 or not torch.cuda.is_available():
+        return None
+    mode = getattr(args, "mixed_precision", "auto")
+    if mode == "none":
+        return None
+    if mode == "bf16":
+        return torch.bfloat16
+    if mode == "fp16":
+        return torch.float16
+    if mode != "auto":
+        return None
+    device = torch.device(args.device)
+    device_index = device.index if device.index is not None else torch.cuda.current_device()
+    major, _minor = torch.cuda.get_device_capability(device_index)
+    return torch.bfloat16 if major >= 8 else torch.float16
+
+
+def _autocast_context(args):
+    dtype = _resolve_autocast_dtype(args)
+    if dtype is None:
+        return nullcontext()
+    return torch.autocast(device_type="cuda", dtype=dtype)
+
+
 def _training_state_path(save_dir: str) -> str:
     return os.path.join(save_dir, "training_state.pt")
 
@@ -221,9 +260,10 @@ def _ensure_tensorboardx_shim() -> None:
 def _compute_regression_val_loss(model, data_loader, loss_func, args) -> float:
     model.eval()
     losses = []
+    empty_cache_interval = _cuda_empty_cache_interval()
 
     with torch.no_grad():
-        for batch in data_loader:
+        for batch_idx, batch in enumerate(data_loader):
             mol_batch, features_batch, target_batch, mask_batch, atom_descriptors_batch, atom_features_batch, bond_descriptors_batch, bond_features_batch, _constraints_batch, data_weights_batch = (
                 batch.batch_graph(),
                 batch.features(),
@@ -260,28 +300,30 @@ def _compute_regression_val_loss(model, data_loader, loss_func, args) -> float:
                 lt_target_batch = lt_target_batch.to(torch_device)
                 gt_target_batch = gt_target_batch.to(torch_device)
 
-            preds = model(
-                mol_batch,
-                features_batch,
-                atom_descriptors_batch,
-                atom_features_batch,
-                bond_descriptors_batch,
-                bond_features_batch,
-                None,
-                None,
-            )
+            with _autocast_context(args):
+                preds = model(
+                    mol_batch,
+                    features_batch,
+                    atom_descriptors_batch,
+                    atom_features_batch,
+                    bond_descriptors_batch,
+                    bond_features_batch,
+                    None,
+                    None,
+                )
 
-            if args.loss_function == "bounded_mse":
-                loss = loss_func(preds, targets, lt_target_batch, gt_target_batch) * target_weights * data_weights * masks
-            elif args.loss_function == "evidential":
-                loss = loss_func(preds, targets, args.evidential_regularization) * target_weights * data_weights * masks
-            elif args.loss_function == "dirichlet":
-                loss = loss_func(preds, targets, args.evidential_regularization) * target_weights * data_weights * masks
-            else:
-                loss = loss_func(preds, targets) * target_weights * data_weights * masks
+                if args.loss_function == "bounded_mse":
+                    loss = loss_func(preds, targets, lt_target_batch, gt_target_batch) * target_weights * data_weights * masks
+                elif args.loss_function == "evidential":
+                    loss = loss_func(preds, targets, args.evidential_regularization) * target_weights * data_weights * masks
+                elif args.loss_function == "dirichlet":
+                    loss = loss_func(preds, targets, args.evidential_regularization) * target_weights * data_weights * masks
+                else:
+                    loss = loss_func(preds, targets) * target_weights * data_weights * masks
 
-            loss = loss.sum() / masks.sum()
+                loss = loss.sum() / masks.sum()
             losses.append(float(loss.item()))
+            _maybe_empty_cuda_cache(batch_idx, empty_cache_interval)
 
     model.train()
     if len(losses) == 0:

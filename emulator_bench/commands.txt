@@ -21,7 +21,7 @@ python -m pip install fair-esm \
 conda run -n mldb python emulator_bench/launch_parallel_retrain.py \
   --gpus 0 \
   --seeds 666 777 888 \
-  --value_types kcat km ki \
+  --value_types kcat \
   --ensemble_size 1 \
   --run_name paper_defaults_single_model \
   --skip_align \
@@ -31,6 +31,7 @@ conda run -n mldb python emulator_bench/launch_parallel_retrain.py \
   --cpu_threads 2 \
   --interop_threads 1 \
   --esm_mem_cache_max 128 \
+  --cuda_empty_cache_interval 100 \
   --max_parallel_per_gpu 6
 
 # 2) Dry-run discovery without writes or training.
