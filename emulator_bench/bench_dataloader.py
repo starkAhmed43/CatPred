@@ -16,6 +16,10 @@ _CACHED_BATCHES_BY_KEY = {}
 _BATCH_CACHE_SCHEMA_VERSION = 1
 
 
+def clear_batch_graph_memory_cache() -> None:
+    _CACHED_BATCHES_BY_KEY.clear()
+
+
 def _env_flag(name: str, default: bool) -> bool:
     raw = os.getenv(name)
     if raw is None:
@@ -195,6 +199,8 @@ def install_dataloader_patches(
             bucket_multiplier_now = _env_int("CATPRED_BENCH_BUCKET_MULTIPLIER", 50)
             low_ram_mode_now = _env_flag("CATPRED_BENCH_LOW_RAM_MODE", default=True)
             cache_batch_graphs_now = _env_flag("CATPRED_BENCH_CACHE_BATCH_GRAPHS", default=False)
+            strict_precompute_now = _env_flag("CATPRED_BENCH_STRICT_PRECOMPUTE", default=False)
+            keep_batch_cache_in_memory = _env_flag("CATPRED_BENCH_KEEP_BATCH_CACHE_IN_MEMORY", default=True)
             self._cache_batch_graphs = cache_batch_graphs_now
             self._cached_batches = None
             self._cached_batch_order_rng = Random(self._seed)
@@ -266,12 +272,13 @@ def install_dataloader_patches(
                     }
                     disk_cache_path = _batch_cache_path(disk_cache_meta)
 
-                cached_batches = _CACHED_BATCHES_BY_KEY.get(inmem_cache_key)
+                cached_batches = _CACHED_BATCHES_BY_KEY.get(inmem_cache_key) if keep_batch_cache_in_memory else None
                 if cached_batches is None and disk_cache_path is not None and disk_cache_path.exists():
                     loaded_batches = _load_disk_batch_cache(disk_cache_path)
                     if loaded_batches is not None:
                         cached_batches = loaded_batches
-                        _CACHED_BATCHES_BY_KEY[inmem_cache_key] = cached_batches
+                        if keep_batch_cache_in_memory:
+                            _CACHED_BATCHES_BY_KEY[inmem_cache_key] = cached_batches
                         print(
                             "[bench] batch_graph_cache "
                             f"loaded_from_disk batches={len(cached_batches)} seed={self._seed}",
@@ -279,6 +286,12 @@ def install_dataloader_patches(
                         )
 
                 if cached_batches is None:
+                    if strict_precompute_now:
+                        expected = str(disk_cache_path) if disk_cache_path is not None else "unavailable (dataset signature missing)"
+                        raise FileNotFoundError(
+                            "Missing precomputed BatchMolGraph cache while CATPRED_BENCH_STRICT_PRECOMPUTE=1. "
+                            f"Expected: {expected}. Run emulator_bench/precompute_features.py first."
+                        )
                     print(
                         "[bench] batch_graph_cache "
                         f"building one-time batches for seed={self._seed} (this can take time)",
@@ -310,7 +323,8 @@ def install_dataloader_patches(
                         cached_batches.append(
                             construct_molecule_batch([self._dataset[idx] for idx in batch_indices])
                         )
-                    _CACHED_BATCHES_BY_KEY[inmem_cache_key] = cached_batches
+                    if keep_batch_cache_in_memory:
+                        _CACHED_BATCHES_BY_KEY[inmem_cache_key] = cached_batches
                     if disk_cache_path is not None:
                         _save_disk_batch_cache(disk_cache_path, cached_batches)
                         print(

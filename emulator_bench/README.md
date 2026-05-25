@@ -1,190 +1,104 @@
-# emulator_bench
+# CatPred EMULaToR Bench
 
-This folder ports the `DeepDTAGen_regression/emulator_bench` style workflow into CatPred without editing CatPred core files in place.
+This directory adds wrapper code for retraining CatPred on EMULaToR train/val/test split parquets under:
 
-What this adds:
-- Direct train/val/test flow from `.csv` or `.parquet` using `smiles`, `sequence`, and `uniprot_id`
-- Bench-local inline protein loader that bypasses CatPred's JSON sidecar requirement
-- Persistent ESM disk cache under `emulator_bench/.cache_embeddings/esm2`
-- Optional ESM cache warmup to reduce repeated preprocessing cost across thresholds and seeds
-- TVT training wrapper that reuses CatPred's native training path
-- Split benchmark runner and Optuna tuner
+`/home/adhil/github/EMULaToR/data/processed/baselines/CatPred`
 
-What stays intact:
-- CatPred source files under `catpred/*` are left unedited
-- CatPred featurization, losses, checkpoint format, and train loop remain the base implementation
-- Bench-only runtime patches are applied at wrapper startup for CSV protein loading and a few speed-focused execution fixes
+The CatPred model architecture is not changed. The bench patches data loading, mixed precision, optimizer setup, and checkpoint control at wrapper startup so CPU-heavy work is done before GPU training.
 
-## Important integration note
+## Inputs
 
-Original CatPred expects:
-- a CSV with a `pdbpath` column
-- a `protein_records_path` gzip JSON keyed by `basename(pdbpath)`
+Each split table must provide:
 
-The bench does not. Your benchmark CSVs should provide:
-- `smiles`
-- `sequence`
-- `uniprot_id`
+- `smiles`: substrate SMILES for CatPred/RDKit D-MPNN features.
+- `sequence`: enzyme sequence.
+- `log10_value`: regression target.
+- aligned structure columns produced by `align_structures.py`, especially `structure_path` and `catpred_structure_id`.
 
-The bench patches CatPred's loader to read sequence directly from the CSV and uses `uniprot_id` as the protein key for EGNN embedding lookup.
+The data tree is discovered as:
 
-This is additive only. The original split CSVs are not modified.
+- `kcat`, `km`, `ki`
+- direct split roots such as `random_splits_grouped_sequence`, `random_splits_grouped_smiles`, `uniprot_time_splits`
+- thresholded roots such as `enzyme_sequence_splits/threshold_*`, `substrate_splits/threshold_*`, `enzyme_structure_splits/threshold_*`, `conformer_cosine_splits/threshold_*`
 
-## 1) Stage TVT data and warm cache
+## Structure Alignment
 
-`--train_csv`, `--val_csv`, and `--test_csv` accept both `.csv` and `.parquet` paths.
+`align_structures.py` updates split parquet/CSV files in place and first backs up originals under:
 
-```bash
-python emulator_bench/build_tvt_data.py \
-  --train_csv /path/to/train.csv \
-  --val_csv /path/to/val.csv \
-  --test_csv /path/to/test.csv \
-  --output_root /path/to/workdir \
-  --dataset_name myset \
-  --sequence_col sequence \
-  --uniprot_id_col uniprot_id \
-  --warm_esm_cache \
-  --cache_dir emulator_bench/.cache_embeddings
-```
+`/home/adhil/github/EMULaToR/data/processed/baselines/CatPred/_aligned_pdb_backups`
 
-Outputs:
-- `myset_manifest.json`
+It selects one structure per row:
 
-## 2) Train with explicit TVT
+1. best sequence-aligned experimental PDBe PDB from `/home/adhil/github/EMULaToR/data/intermediate/processed_exp_pdb`
+2. AlphaFold fallback from `/home/adhil/github/EMULaToR/data/intermediate/alphafold`
+3. ESM fallback from `/home/adhil/github/EMULaToR/data/intermediate/esm`
 
-`--train_csv`, `--val_csv`, and `--test_csv` accept both `.csv` and `.parquet` paths.
+Added columns include `pdbs`, `pdb_source`, `pdb_type`, `structure_path`, `chain_id`, `catpred_structure_id`, and audit columns.
+
+## Embedding Caches
+
+Reusable caches live under:
+
+- `.../CatPred/embeddings/esm2`: ESM2 tensors keyed by normalized sequence hash.
+- `.../CatPred/embeddings/fair_esm`: isolated Meta fair-esm install used only by CatPred ESM2.
+- `.../CatPred/embeddings/progres/filepaths.txt`: deduplicated proGRES structure list.
+- `.../CatPred/embeddings/progres/searchdb.pt`: raw proGRES output.
+- `.../CatPred/embeddings/progres/progres_egnn_by_structure_id.pt`: CatPred EGNN feature dict keyed by `catpred_structure_id`.
+
+proGRES is run once with:
 
 ```bash
-python emulator_bench/train_single_target_tvt.py \
-  --train_csv /path/to/train.csv \
-  --val_csv /path/to/val.csv \
-  --test_csv /path/to/test.csv \
-  --sequence_col sequence \
-  --uniprot_id_col uniprot_id \
-  --out_dir /path/to/workdir/results \
-  --smiles_columns smiles \
-  --target_columns log10_value \
-  --device cuda:0 \
-  --grad_accum_steps 2 \
-  --smart_batching \
-  --optimizer_fused auto \
-  --add_esm_feats --loss_function mve --seq_embed_dim 36 --seq_self_attn_nheads 6
+TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1 progres embed \
+  -l .../CatPred/embeddings/progres/filepaths.txt \
+  -o .../CatPred/embeddings/progres/searchdb.pt \
+  -f pdb \
+  -d cuda:0
 ```
 
-Anything after the wrapper args is passed through to CatPred unchanged.
+ESM2 embeddings are computed once per unique sequence and reused across `kcat`, `km`, `ki`, splits, seeds, and ensembles.
 
-Speed-oriented defaults in the bench:
-- inline CSV protein loading instead of sidecar JSON generation
-- in-memory reuse of duplicate protein entries within a split load
-- sequence tokenization cached once per unique protein instead of per batch
-- pretrained EGNN `.pt` loaded once per process and reused across model reloads
-- ESM embeddings are only computed when `--add_esm_feats` is actually enabled and persisted on disk under `emulator_bench/.cache_embeddings/esm2`
-- graph cache forced on by default via `--cache_cutoff inf`
-- mixed precision follows the DeepDTAGen/ProSmith policy via `--mixed_precision auto`:
-  BF16 on Ampere/Hopper-class GPUs, otherwise FP16, with grad scaling only for FP16
-- learning rate scheduler defaults to cosine annealing with warmup (no restarts) via `--lr_scheduler cosine_warmup`
-- fused Adam is available via `--optimizer_fused {auto,on,off}` and defaults to `auto`
-- gradient accumulation is available via `--grad_accum_steps`
-- pinned-memory / persistent-worker / prefetch tuning are exposed in the wrapper
-- optional length-bucketed smart batching is available via `--smart_batching`
-- TF32 and cuDNN autotuning enabled by default on CUDA; pass `--disable_tf32` if you want stricter float32 behavior
-- optional ESM cache warmup across train/val/test before repeated seed runs
-- ESM cache policy flags:
-  - `--require_cached_esm` fails fast if a needed embedding is missing (ensures no on-the-fly ESM compute)
-  - `--overwrite_esm_cache` recomputes and overwrites ESM cache entries
-- validation cadence and metric cost controls:
-  - `--val_every_n_epochs N`
-  - `--final_epoch_metrics_only` (validation checkpoints compute loss only; full metrics computed on final epoch)
-  - `--early_stopping_patience` and `--early_stopping_min_delta`
-- redundant native `test_preds.csv` writes disabled during training
-
-Outputs in `out_dir`:
-- `fold_0/...` native CatPred training outputs
-- `bestmodel.pth` for single-model runs
-- `bestmodel_dir.json`
-- `pred_label_val.csv`
-- `pred_label_test.csv`
-- `results_val.csv`
-- `results_test.csv`
-- `final_results_val.csv`
-- `final_results_test.csv`
-- `run_summary.csv`
-
-## 3) Predict a trained split
+The `esm` import name conflicts between ESM3 and Meta fair-esm. CatPred uses an isolated fair-esm vendor path for ESM2, so the global `esm` package can remain ESM3:
 
 ```bash
-python emulator_bench/predict_single_target.py \
-  --input_csv /path/to/test.csv \
-  --sequence_col sequence \
-  --uniprot_id_col uniprot_id \
-  --checkpoint_dir /path/to/workdir/results/fold_0 \
-  --out_csv /path/to/workdir/predictions.csv \
-  --metrics_csv /path/to/workdir/predictions_metrics.csv \
-  --smiles_columns smiles \
-  --target_columns log10_value \
-  --device cuda:0 \
-  --num_workers 4
+python -m pip install fair-esm \
+  -t /home/adhil/github/EMULaToR/data/processed/baselines/CatPred/embeddings/fair_esm
 ```
 
-## 4) Run threshold benchmarks
+Override this location with `CATPRED_FAIR_ESM_PATH` if needed.
 
-Expected layout (both supported):
-- `<base_dir>/<value_type>/<split_group>/threshold_x/train.{csv,parquet}`
-- `<base_dir>/<value_type>/<split_group>/threshold_x/val.{csv,parquet}`
-- `<base_dir>/<value_type>/<split_group>/threshold_x/test.{csv,parquet}`
-- `<base_dir>/<split_group>/threshold_x/train.{csv,parquet}` (value type omitted)
-- `<base_dir>/<split_group>/train.{csv,parquet}` (direct split roots, e.g. `random_splits`)
+## CPU Precompute
 
-Example:
+`precompute_features.py` uses `ProcessPoolExecutor` across split/seed jobs. It materializes parquet to stable CSV views, builds inline CatPred dataset caches, warms RDKit `MolGraph` caches, and optionally builds per-seed `BatchMolGraph` caches. During batch-cache precompute, worker-local batch and RDKit globals are cleared after each job; `--max_tasks_per_child 1` is the safest setting when RAM pressure is high.
 
-```bash
-CUDA_VISIBLE_DEVICES=0 python emulator_bench/run_split_benchmarks.py \
-  --base_dir /home/ubuntu/adhil/EMULaToR/data/processed/baselines/catpred \
-  --sequence_col sequence \
-  --uniprot_id_col uniprot_id \
-  --smiles_columns smiles \
-  --target_columns log10_value \
-  --device cuda:0 \
-  --grad_accum_steps 2 \
-  --smart_batching \
-  --warm_esm_cache \
-  --cache_dir emulator_bench/.cache_embeddings \
-  --add_esm_feats --loss_function mve --seq_embed_dim 36 --seq_self_attn_nheads 6
-```
+Training defaults to strict precompute mode. If a required dataset, ESM, MolGraph, or BatchMolGraph cache is missing, `train_single_target_tvt.py` fails before GPU training instead of doing CPU featurization on the training path.
 
-Per-threshold artifacts:
-- `catpred_data/*`
-- `catpred_results/seed_<seed>/*`
+## Training Defaults
 
-Aggregate outputs:
-- `catpred_summary_runs.csv`
-- `catpred_summary_thresholds.csv`
-- `catpred_summary_by_split_group.csv`
-- `catpred_summary_ranked.csv`
-- `catpred_summary.csv`
+Default paper retraining settings are in `original_catpred_retrain_hparams.json`:
 
-## 5) Tune generic training hyperparameters
+- `batch_size=32`
+- `seq_embed_dim=36`
+- `seq_self_attn_nheads=6`
+- `ensemble_size=10`
+- `loss_function=mve`
+- `max_lr=0.001`
+- `epochs=30`
 
-```bash
-CUDA_VISIBLE_DEVICES=0 python emulator_bench/tune_optuna.py \
-  --base_dir /home/ubuntu/adhil/EMULaToR/data/processed/baselines/catpred \
-  --sequence_col sequence \
-  --uniprot_id_col uniprot_id \
-  --metric MSE \
-  --eval_split val \
-  --n_trials 20 \
-  --device cuda:0 \
-  --grad_accum_steps 2 \
-  --smart_batching \
-  --warm_esm_cache \
-  --cache_dir emulator_bench/.cache_embeddings \
-  --add_esm_feats --loss_function mve --seq_embed_dim 36 --seq_self_attn_nheads 6
-```
+`launch_parallel_retrain.py` runs alignment, embedding cache, CPU precompute, and training across all discovered `kcat`, `km`, and `ki` splits. It uses physical GPU `1` by default and maps each worker process to `CUDA_VISIBLE_DEVICES=<gpu>` with in-process `--device cuda:0`.
 
-Artifacts:
-- `<base_dir>/<value_type>/optuna_studies/*_best_hparams.json`
-- `<base_dir>/<value_type>/optuna_studies/*_trials.csv`
+The default JSON records the paper ensemble setting (`ensemble_size=10`). For one independent model per seed, pass `--ensemble_size 1`; launcher CLI hyperparameter flags override values from the JSON.
 
-## Notebook note
+The launcher defaults to `--cpu_threads 2 --interop_threads 1` for each training subprocess and exports the matching OpenMP/BLAS environment variables before Python starts. This prevents six parallel GPU runs from each spawning very large CPU thread pools. With batch-graph caches enabled, training collation forces `num_workers=0`; keep `--num_workers 0` unless you intentionally want worker processes during post-fit evaluation.
 
-I checked the shipped notebooks. They contain demo and packaging flow, not hidden CatPred training architecture or loss logic, so no model-specific notebook logic needed to be copied into this folder.
+Resumability:
+
+- alignment, ESM, proGRES, dataset, MolGraph, and BatchMolGraph caches skip completed artifacts
+- completed split runs are skipped by `final_results_test.csv`
+- each ensemble member writes `training_state.pt` after epochs and `training_complete.json` when done
+- restart resumes unfinished ensemble members from the last completed epoch
+- Ctrl+C or SIGTERM cancels pending work and terminates active precompute workers or training subprocess groups; partial manifests are written where possible
+- `kill_bench.py` lists matching bench processes by default and terminates them only with `--yes`
+
+## Optuna
+
+Optuna remains separate from default retraining. It tunes retraining-safe optimization settings such as learning rate schedule values, dropout, warmup, and optionally batch size. It does not change model architecture defaults unless explicitly requested.

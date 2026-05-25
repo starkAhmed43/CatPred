@@ -1,6 +1,14 @@
 import torch
 import os
 from functools import partial
+
+try:
+    from emulator_bench.fair_esm_shim import ensure_fair_esm
+
+    ensure_fair_esm()
+except ImportError:
+    pass
+
 import esm
 from torch.nn.utils.rnn import pad_sequence
 from .cache_utils import cache_fn, run_once

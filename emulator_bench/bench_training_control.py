@@ -1,5 +1,6 @@
 import json
 import os
+import random
 import sys
 import types
 from logging import Logger
@@ -118,6 +119,93 @@ def _env_flag(name: str, default: bool = False) -> bool:
     if raw is None:
         return default
     return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _training_state_path(save_dir: str) -> str:
+    return os.path.join(save_dir, "training_state.pt")
+
+
+def _training_complete_path(save_dir: str) -> str:
+    return os.path.join(save_dir, "training_complete.json")
+
+
+def _capture_rng_state() -> dict:
+    state = {
+        "torch": torch.get_rng_state(),
+        "numpy": np.random.get_state(),
+        "python": random.getstate(),
+    }
+    if torch.cuda.is_available():
+        state["cuda"] = torch.cuda.get_rng_state_all()
+    return state
+
+
+def _restore_rng_state(state: dict | None) -> None:
+    if not state:
+        return
+    try:
+        torch.set_rng_state(state["torch"])
+    except Exception:
+        pass
+    try:
+        np.random.set_state(state["numpy"])
+    except Exception:
+        pass
+    try:
+        random.setstate(state["python"])
+    except Exception:
+        pass
+    if torch.cuda.is_available() and "cuda" in state:
+        try:
+            torch.cuda.set_rng_state_all(state["cuda"])
+        except Exception:
+            pass
+
+
+def _load_training_state(path: str, device):
+    if not os.path.exists(path):
+        return None
+    try:
+        return torch.load(path, map_location=device, weights_only=False)
+    except TypeError:
+        return torch.load(path, map_location=device)
+
+
+def _save_training_state(
+    path: str,
+    *,
+    model,
+    optimizer,
+    scheduler,
+    epoch: int,
+    n_iter: int,
+    best_val_loss: float,
+    best_epoch: int,
+    epochs_since_improvement: int,
+) -> None:
+    scaler = getattr(model, "_bench_grad_scaler", None)
+    payload = {
+        "epoch": int(epoch),
+        "n_iter": int(n_iter),
+        "best_val_loss": float(best_val_loss),
+        "best_epoch": int(best_epoch),
+        "epochs_since_improvement": int(epochs_since_improvement),
+        "model_state_dict": model.state_dict(),
+        "optimizer_state_dict": optimizer.state_dict(),
+        "scheduler_state_dict": scheduler.state_dict() if hasattr(scheduler, "state_dict") else None,
+        "grad_scaler_state_dict": scaler.state_dict() if scaler is not None and scaler.is_enabled() else None,
+        "rng_state": _capture_rng_state(),
+    }
+    tmp_path = f"{path}.tmp.{os.getpid()}"
+    torch.save(payload, tmp_path)
+    os.replace(tmp_path, path)
+
+
+def _write_complete_marker(path: str, payload: dict) -> None:
+    tmp_path = f"{path}.tmp.{os.getpid()}"
+    with open(tmp_path, "w") as handle:
+        json.dump(payload, handle, indent=2, sort_keys=True)
+    os.replace(tmp_path, path)
 
 
 def _ensure_tensorboardx_shim() -> None:
@@ -461,16 +549,20 @@ def install_training_control_patches(
 
             model = model.to(args.device)
 
-            save_checkpoint(
-                os.path.join(save_dir, MODEL_FILE_NAME),
-                model,
-                scaler,
-                features_scaler,
-                atom_descriptor_scaler,
-                bond_descriptor_scaler,
-                atom_bond_scaler,
-                args,
-            )
+            model_file = os.path.join(save_dir, MODEL_FILE_NAME)
+            state_file = _training_state_path(save_dir)
+            complete_file = _training_complete_path(save_dir)
+            if not os.path.exists(model_file):
+                save_checkpoint(
+                    model_file,
+                    model,
+                    scaler,
+                    features_scaler,
+                    atom_descriptor_scaler,
+                    bond_descriptor_scaler,
+                    atom_bond_scaler,
+                    args,
+                )
 
             optimizer = run_training_module.build_optimizer(model, args)
             scheduler = run_training_module.build_lr_scheduler(optimizer, args)
@@ -478,8 +570,35 @@ def install_training_control_patches(
             best_val_loss = float("inf")
             best_epoch, n_iter = 0, 0
             epochs_since_improvement = 0
+            start_epoch = 0
+            training_complete = os.path.exists(complete_file) and os.path.exists(model_file)
+            if training_complete:
+                try:
+                    with open(complete_file) as handle:
+                        complete_payload = json.load(handle)
+                    best_val_loss = float(complete_payload.get("best_val_loss", best_val_loss))
+                    best_epoch = int(complete_payload.get("best_epoch", best_epoch))
+                    info(f"[bench] resume model_{model_idx}: already complete; reusing {model_file}")
+                except Exception:
+                    pass
+            else:
+                state = _load_training_state(state_file, args.device)
+                if state is not None:
+                    model.load_state_dict(state["model_state_dict"])
+                    optimizer.load_state_dict(state["optimizer_state_dict"])
+                    if state.get("scheduler_state_dict") is not None and hasattr(scheduler, "load_state_dict"):
+                        scheduler.load_state_dict(state["scheduler_state_dict"])
+                    if state.get("grad_scaler_state_dict") is not None:
+                        model._bench_pending_grad_scaler_state = state["grad_scaler_state_dict"]
+                    best_val_loss = float(state.get("best_val_loss", best_val_loss))
+                    best_epoch = int(state.get("best_epoch", best_epoch))
+                    n_iter = int(state.get("n_iter", n_iter))
+                    epochs_since_improvement = int(state.get("epochs_since_improvement", epochs_since_improvement))
+                    start_epoch = int(state.get("epoch", -1)) + 1
+                    _restore_rng_state(state.get("rng_state"))
+                    info(f"[bench] resume model_{model_idx}: starting at epoch {start_epoch + 1}/{args.epochs}")
 
-            for epoch in trange(args.epochs):
+            for epoch in trange(start_epoch, args.epochs):
                 # debug(f"Epoch {epoch}")
                 n_iter = train_module.train(
                     model=model,
@@ -497,6 +616,17 @@ def install_training_control_patches(
                 is_final_epoch = epoch == args.epochs - 1
                 should_validate = is_final_epoch or ((epoch + 1) % val_every_n_epochs == 0)
                 if not should_validate:
+                    _save_training_state(
+                        state_file,
+                        model=model,
+                        optimizer=optimizer,
+                        scheduler=scheduler,
+                        epoch=epoch,
+                        n_iter=n_iter,
+                        best_val_loss=best_val_loss,
+                        best_epoch=best_epoch,
+                        epochs_since_improvement=epochs_since_improvement,
+                    )
                     continue
 
                 val_loss = _compute_regression_val_loss(model, val_data_loader, loss_func, args)
@@ -543,10 +673,44 @@ def install_training_control_patches(
                         f"[bench] Early stopping at epoch {epoch} after {epochs_since_improvement} "
                         "validation checks without loss improvement."
                     )
+                    _save_training_state(
+                        state_file,
+                        model=model,
+                        optimizer=optimizer,
+                        scheduler=scheduler,
+                        epoch=epoch,
+                        n_iter=n_iter,
+                        best_val_loss=best_val_loss,
+                        best_epoch=best_epoch,
+                        epochs_since_improvement=epochs_since_improvement,
+                    )
                     break
 
+                _save_training_state(
+                    state_file,
+                    model=model,
+                    optimizer=optimizer,
+                    scheduler=scheduler,
+                    epoch=epoch,
+                    n_iter=n_iter,
+                    best_val_loss=best_val_loss,
+                    best_epoch=best_epoch,
+                    epochs_since_improvement=epochs_since_improvement,
+                )
+
+            if not training_complete:
+                _write_complete_marker(
+                    complete_file,
+                    {
+                        "model_idx": model_idx,
+                        "best_val_loss": best_val_loss,
+                        "best_epoch": best_epoch,
+                        "epochs": args.epochs,
+                    },
+                )
+
             info(f"Model {model_idx} best validation loss = {best_val_loss:.6f} on epoch {best_epoch}")
-            model = load_checkpoint(os.path.join(save_dir, MODEL_FILE_NAME), device=args.device, logger=logger)
+            model = load_checkpoint(model_file, device=args.device, logger=logger)
 
             if empty_test_set:
                 info(f"Model {model_idx} provided with no test set, no metric evaluation will be performed.")

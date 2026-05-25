@@ -6,7 +6,7 @@ from pathlib import Path
 
 os.environ["TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD"] = "1"
 
-from common import REPO_ROOT, default_cache_dir
+from common import DEFAULT_SPLIT_GROUPS, REPO_ROOT, default_base_dir, default_cache_dir
 
 
 TUNE_SCRIPT = REPO_ROOT / "emulator_bench" / "tune_optuna.py"
@@ -24,8 +24,8 @@ def normalize_metric(metric: str) -> str:
 def main():
     parser = argparse.ArgumentParser(description="Launch parallel Optuna sweeps for CatPred emulator bench.")
     parser.add_argument("--gpus", nargs="+", type=int, required=True, help="GPU ids, e.g. --gpus 0 1 2 3")
-    parser.add_argument("--base_dir", required=True, type=str)
-    parser.add_argument("--split_groups", nargs="+", required=True)
+    parser.add_argument("--base_dir", default=str(default_base_dir()), type=str)
+    parser.add_argument("--split_groups", nargs="+", default=list(DEFAULT_SPLIT_GROUPS))
     parser.add_argument("--threshold", default=None, type=str, help="Single threshold alias, e.g. threshold_0.09")
     parser.add_argument("--thresholds", nargs="+", default=None)
     parser.add_argument("--metric", default="rmse", type=str)
@@ -33,15 +33,15 @@ def main():
     parser.add_argument("--epochs", default=30, type=int)
     parser.add_argument("--val_every", default=2, type=int)
     parser.add_argument("--n_trials", default=30, type=int)
-    parser.add_argument("--batch_size", default=16, type=int)
+    parser.add_argument("--batch_size", default=32, type=int)
     parser.add_argument("--num_workers", default=8, type=int)
     parser.add_argument("--pin_memory", action="store_true")
     parser.add_argument("--storage", default=None, type=str)
     parser.add_argument("--study_name", default=None, type=str)
-    parser.add_argument("--value_type", default="custom", type=str)
+    parser.add_argument("--value_type", default="kcat", type=str)
     parser.add_argument("--dataset_type", default="regression", type=str)
     parser.add_argument("--sequence_col", default="sequence", type=str)
-    parser.add_argument("--uniprot_id_col", default="uniprot_id", type=str)
+    parser.add_argument("--uniprot_id_col", default="catpred_structure_id", type=str)
     parser.add_argument("--smiles_columns", nargs="+", default=["smiles"])
     parser.add_argument("--target_columns", nargs="+", default=["log10_value"])
     parser.add_argument("--cache_dir", default=default_cache_dir(), type=str)
@@ -52,7 +52,14 @@ def main():
     parser.add_argument("--early_stopping_min_delta", default=0.0, type=float)
     parser.add_argument("--warm_esm_cache", action="store_true")
     parser.add_argument("--overwrite_esm_cache", action="store_true")
-    parser.add_argument("--require_cached_esm", action="store_true")
+    parser.add_argument("--require_cached_esm", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--add_esm_feats", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--add_pretrained_egnn_feats", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--pretrained_egnn_feats_path", default=str(Path(default_cache_dir()) / "progres" / "progres_egnn_by_structure_id.pt"), type=str)
+    parser.add_argument("--loss_function", default="mve", type=str)
+    parser.add_argument("--seq_embed_dim", default=36, type=int)
+    parser.add_argument("--seq_self_attn_nheads", default=6, type=int)
+    parser.add_argument("--strict_precompute", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--sampler_seed", default=42, type=int)
     parser.add_argument("--optuna_startup_trials", default=5, type=int)
     parser.add_argument("--dry_run", action="store_true")
@@ -83,6 +90,7 @@ def main():
         "--val_every_n_epochs", str(args.val_every),
         "--n_trials", str(args.n_trials),
         "--batch_size", str(args.batch_size),
+        "--loss_function", args.loss_function,
         "--num_workers", str(args.num_workers),
         "--cache_dir", args.cache_dir,
         "--mixed_precision", args.mixed_precision,
@@ -112,6 +120,20 @@ def main():
         cmd.append("--overwrite_esm_cache")
     if args.require_cached_esm:
         cmd.append("--require_cached_esm")
+    else:
+        cmd.append("--no-require_cached_esm")
+    if args.add_esm_feats:
+        cmd.append("--add_esm_feats")
+        cmd.extend(["--seq_embed_dim", str(args.seq_embed_dim)])
+        cmd.extend(["--seq_self_attn_nheads", str(args.seq_self_attn_nheads)])
+    else:
+        cmd.append("--no-add_esm_feats")
+    if args.add_pretrained_egnn_feats:
+        cmd.extend(["--add_pretrained_egnn_feats", "--pretrained_egnn_feats_path", args.pretrained_egnn_feats_path])
+    else:
+        cmd.append("--no-add_pretrained_egnn_feats")
+    if args.strict_precompute:
+        cmd.append("--strict_precompute")
     if args.dry_run:
         cmd.append("--dry_run")
     cmd.extend(passthrough)

@@ -319,6 +319,11 @@ def _get_data_inline(
         if cached_data is not None:
             setattr(cached_data, "_bench_dataset_signature", dataset_sig)
             return cached_data
+        if _env_flag("CATPRED_BENCH_STRICT_PRECOMPUTE", default=False):
+            raise FileNotFoundError(
+                "Missing precomputed inline dataset cache while CATPRED_BENCH_STRICT_PRECOMPUTE=1. "
+                f"Expected: {dataset_cache_path}. Run emulator_bench/precompute_features.py first."
+            )
 
     with open(path) as f:
         reader = csv.DictReader(f)

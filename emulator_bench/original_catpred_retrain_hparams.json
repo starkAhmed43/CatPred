@@ -1,8 +1,15 @@
 {
-  "batch_size": 16,
+  "source": "CatPred paper defaults for production-style retraining",
+  "batch_size": 32,
+  "seq_embed_dim": 36,
+  "seq_self_attn_nheads": 6,
+  "ensemble_size": 10,
+  "loss_function": "mve",
   "init_lr": 0.0001,
   "max_lr": 0.001,
   "final_lr": 0.0001,
   "warmup_epochs": 2.0,
-  "dropout": 0.0
+  "dropout": 0.0,
+  "epochs": 30,
+  "sequence_max_length": 2048
 }

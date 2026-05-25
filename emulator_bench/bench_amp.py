@@ -90,6 +90,11 @@ def install_amp_patches(mixed_precision: str = "auto") -> None:
             scaler = torch.amp.GradScaler("cuda", enabled=(autocast_dtype == torch.float16))
             model._bench_grad_scaler = scaler
             model._bench_grad_scaler_mode = precision_mode
+        pending_scaler_state = getattr(model, "_bench_pending_grad_scaler_state", None)
+        if pending_scaler_state is not None:
+            if scaler.is_enabled():
+                scaler.load_state_dict(pending_scaler_state)
+            delattr(model, "_bench_pending_grad_scaler_state")
         if not getattr(model, "_bench_amp_logged", False):
             if precision_device_index is not None:
                 gpu_name = torch.cuda.get_device_name(precision_device_index)

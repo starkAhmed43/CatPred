@@ -69,6 +69,10 @@ def build_catpred_train_argv(args):
         "--ensemble_size", str(args.ensemble_size),
         "--num_workers", str(args.num_workers),
         "--cache_cutoff", str(args.cache_cutoff),
+        "--loss_function", args.loss_function,
+        "--seq_embed_dim", str(args.seq_embed_dim),
+        "--seq_self_attn_nheads", str(args.seq_self_attn_nheads),
+        "--sequence_max_length", str(args.sequence_max_length),
     ]
     device_text = str(args.device).lower()
     if device_text.startswith("cuda"):
@@ -84,6 +88,10 @@ def build_catpred_train_argv(args):
     argv.extend(["--smiles_columns", *args.smiles_columns])
     argv.extend(["--target_columns", *args.target_columns])
     argv.extend(["--extra_metrics", *args.extra_metrics])
+    if args.add_esm_feats:
+        argv.append("--add_esm_feats")
+    if args.add_pretrained_egnn_feats:
+        argv.extend(["--add_pretrained_egnn_feats", "--pretrained_egnn_feats_path", args.pretrained_egnn_feats_path])
     return argv
 
 
@@ -171,19 +179,26 @@ def main():
     parser.add_argument("--task_name", default="affinity", type=str)
     parser.add_argument("--dataset_type", default="regression", type=str)
     parser.add_argument("--sequence_col", default="sequence", type=str)
-    parser.add_argument("--uniprot_id_col", default="uniprot_id", type=str)
+    parser.add_argument("--uniprot_id_col", default="catpred_structure_id", type=str)
     parser.add_argument("--smiles_columns", nargs="+", default=["smiles"])
     parser.add_argument("--target_columns", nargs="+", default=["log10_value"])
     parser.add_argument("--metric", default="rmse", type=str)
     parser.add_argument("--extra_metrics", nargs="+", default=["mae", "mse", "r2"])
     parser.add_argument("--seed", default=42, type=int)
     parser.add_argument("--epochs", default=30, type=int)
-    parser.add_argument("--batch_size", default=16, type=int)
+    parser.add_argument("--batch_size", default=32, type=int)
     parser.add_argument("--init_lr", default=1e-4, type=float)
     parser.add_argument("--max_lr", default=1e-3, type=float)
     parser.add_argument("--final_lr", default=1e-4, type=float)
     parser.add_argument("--warmup_epochs", default=2.0, type=float)
     parser.add_argument("--dropout", default=0.0, type=float)
+    parser.add_argument("--loss_function", default="mve", type=str)
+    parser.add_argument("--seq_embed_dim", default=36, type=int)
+    parser.add_argument("--seq_self_attn_nheads", default=6, type=int)
+    parser.add_argument("--sequence_max_length", default=2048, type=int)
+    parser.add_argument("--add_esm_feats", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--add_pretrained_egnn_feats", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--pretrained_egnn_feats_path", default=str(Path(default_cache_dir()) / "progres" / "progres_egnn_by_structure_id.pt"), type=str)
     parser.add_argument("--ensemble_size", default=10, type=int)
     parser.add_argument("--num_workers", default=4, type=int)
     parser.add_argument("--grad_accum_steps", default=1, type=int)
@@ -207,6 +222,7 @@ def main():
     parser.add_argument("--require_cached_esm", action="store_true")
     parser.add_argument("--disable_lazy_esm", action="store_true")
     parser.add_argument("--disable_dataset_cache", action="store_true")
+    parser.add_argument("--strict_precompute", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--low_ram_mode", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--disable_low_ram_mode", action="store_true")
     parser.add_argument("--esm_mem_cache_max", default=None, type=int)
@@ -239,9 +255,13 @@ def main():
     if effective_esm_mem_cache_max is None:
         effective_esm_mem_cache_max = _auto_esm_mem_cache_max(args.ram_budget_gb)
     effective_low_ram_mode = _effective_low_ram_mode(args)
+    if args.strict_precompute and args.add_esm_feats:
+        args.require_cached_esm = True
 
     os.environ["CATPRED_BENCH_LAZY_ESM"] = "0" if args.disable_lazy_esm else "1"
     os.environ["CATPRED_BENCH_DATASET_CACHE"] = "0" if args.disable_dataset_cache else "1"
+    os.environ["CATPRED_BENCH_STRICT_PRECOMPUTE"] = "1" if args.strict_precompute else "0"
+    os.environ["CATPRED_BENCH_RECOVER_MISSING_ESM"] = "0" if args.strict_precompute else "1"
     os.environ["CATPRED_BENCH_ESM_MEM_CACHE_MAX"] = str(max(1, int(effective_esm_mem_cache_max)))
     os.environ["CATPRED_BENCH_RAM_BUDGET_GB"] = str(max(1.0, float(args.ram_budget_gb)))
     configure_esm_cache_policy(
@@ -305,7 +325,18 @@ def main():
             flush=True,
         )
 
-        if (loaded_train + loaded_val + loaded_test) == 0:
+        if args.strict_precompute and not (train_cache_file.exists() and val_cache_file.exists() and test_cache_file.exists()):
+            missing = [
+                str(path)
+                for path in (train_cache_file, val_cache_file, test_cache_file)
+                if not path.exists()
+            ]
+            raise FileNotFoundError(
+                "Missing precomputed MolGraph cache while --strict_precompute is enabled. "
+                f"Missing: {missing}. Run emulator_bench/precompute_features.py first."
+            )
+
+        if not args.strict_precompute and (loaded_train + loaded_val + loaded_test) == 0:
             warmed = warm_molgraph_cache(
                 [train_csv, val_csv, test_csv],
                 args.smiles_columns,
@@ -348,15 +379,19 @@ def main():
     if len(eval_plan) == 0:
         raise ValueError("All post-fit splits were skipped. Enable at least one of train/val/test evaluation.")
 
+    checkpoint_paths = sorted(str(path) for path in ckpt_dir.glob("model_*/model.pt"))
     pred_argv = [
         "--test_path", eval_plan[0][1],
         "--preds_path", str(out_dir / "_tmp_preds.csv"),
-        "--checkpoint_dir", str(ckpt_dir),
         "--protein_records_path", protein_records_path,
         "--batch_size", str(args.batch_size),
         "--num_workers", str(args.num_workers),
         "--drop_extra_columns",
     ]
+    if checkpoint_paths:
+        pred_argv.extend(["--checkpoint_paths", *checkpoint_paths])
+    else:
+        pred_argv.extend(["--checkpoint_dir", str(ckpt_dir)])
     device_text = str(args.device).lower()
     if device_text.startswith("cuda"):
         gpu_index = 0

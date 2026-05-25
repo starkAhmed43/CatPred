@@ -1,249 +1,89 @@
-##############################################
-# Emulator Bench Command Cookbook
-# Input tables can be .csv or .parquet
-##############################################
+# CatPred EMULaToR bench commands
 
-# Recommended shell setup
-# source /home/ubuntu/miniconda3/etc/profile.d/conda.sh
-# conda activate catpred
+# Use the requested environment and GPU.
+# Stop any long bench command with Ctrl+C once. The wrappers terminate active
+# worker/train child processes and keep already-written caches/checkpoints.
+cd /home/adhil/github/CatPred
+export TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1
+export CUDA_VISIBLE_DEVICES=1
 
-# Shared cache root (ESM + tabular CSV materialization + molgraph)
-# ~/github/EMULaToR/data/processed/baselines/CatPred/embeddings
+# List or stop stuck bench processes from this user.
+python emulator_bench/kill_bench.py
+python emulator_bench/kill_bench.py --yes
 
-# 0) Quick sanity: discover jobs only (no training)
-python emulator_bench/run_split_benchmarks.py \
-  --base_dir ~/github/EMULaToR/data/processed/baselines/CatPred \
-  --split_groups enzyme_sequence_splits substrate_splits random_splits \
+# 0) One-time fair-esm isolation for CatPred ESM2.
+# This avoids clobbering the global `esm` package used by ESM3.
+python -m pip install fair-esm \
+  -t /home/adhil/github/EMULaToR/data/processed/baselines/CatPred/embeddings/fair_esm
+
+# 1) One-command default retraining.
+# Remove skip flags for any stage you want the launcher to rebuild.
+conda run -n mldb python emulator_bench/launch_parallel_retrain.py \
+  --gpus 0 1 \
+  --seeds 666 777 888 \
+  --ensemble_size 1 \
+  --run_name paper_defaults_single_model \
+  --skip_align \
+  --skip_embeddings \
+  --skip_precompute \
+  --num_workers 0 \
+  --cpu_threads 2 \
+  --interop_threads 1 \
+  --max_parallel_per_gpu 6
+
+# 2) Dry-run discovery without writes or training.
+conda run -n mldb python emulator_bench/launch_parallel_retrain.py \
+  --gpus 1 \
   --dry_run
 
-# 1) Stage one TVT split + warm ESM cache
-python emulator_bench/build_tvt_data.py \
-  --train_csv ~/github/EMULaToR/data/processed/baselines/CatPred/enzyme_sequence_splits/threshold_0.09/train.parquet \
-  --val_csv ~/github/EMULaToR/data/processed/baselines/CatPred/enzyme_sequence_splits/threshold_0.09/val.parquet \
-  --test_csv ~/github/EMULaToR/data/processed/baselines/CatPred/enzyme_sequence_splits/threshold_0.09/test.parquet \
-  --output_root ~/github/EMULaToR/data/processed/baselines/CatPred/enzyme_sequence_splits/threshold_0.09/catpred_data \
-  --dataset_name catpredkcat_enz_0.09 \
-  --sequence_col sequence \
-  --uniprot_id_col pdbs \
-  --warm_esm_cache \
-  --esm_warm_batch_size 16 \
-  --esm_warm_gpus 0 1 2 \
-  --cache_dir ~/github/EMULaToR/data/processed/baselines/CatPred/embeddings
+# 3) Run only one split family/value type for smoke/debug.
+conda run -n mldb python emulator_bench/launch_parallel_retrain.py \
+  --gpus 1 \
+  --value_types kcat \
+  --split_groups random_splits_grouped_sequence \
+  --seeds 42
 
-# 2) Train one split (saves ckpt + pred_label_{train,val,test}.csv + final_results_{train,val,test}.csv)
-python emulator_bench/train_single_target_tvt.py \
-  --train_csv ~/github/EMULaToR/data/processed/baselines/CatPred/enzyme_sequence_splits/threshold_0.09/train.parquet \
-  --val_csv ~/github/EMULaToR/data/processed/baselines/CatPred/enzyme_sequence_splits/threshold_0.09/val.parquet \
-  --test_csv ~/github/EMULaToR/data/processed/baselines/CatPred/enzyme_sequence_splits/threshold_0.09/test.parquet \
-  --out_dir ~/github/EMULaToR/data/processed/baselines/CatPred/manual_runs/enz_seq_0_09/seed_42 \
-  --sequence_col sequence \
-  --uniprot_id_col pdbs \
-  --smiles_columns smiles \
-  --target_columns log10_value \
+# 4) Run alignment only. Original split files are backed up before in-place edits.
+conda run -n mldb python emulator_bench/align_structures.py \
+  --base_dir /home/adhil/github/EMULaToR/data/processed/baselines/CatPred \
+  --value_types kcat km ki
+
+# 5) Build one-time ESM2 and proGRES caches only.
+CUDA_VISIBLE_DEVICES=1 python emulator_bench/cache_embeddings.py \
+  --base_dir /home/adhil/github/EMULaToR/data/processed/baselines/CatPred \
+  --cache_dir /home/adhil/github/EMULaToR/data/processed/baselines/CatPred/embeddings \
+  --progres_device cuda:0 \
+  --esm_gpus 0
+
+# 6) CPU precompute only, using process workers.
+conda run -n mldb python emulator_bench/precompute_features.py \
+  --base_dir /home/adhil/github/EMULaToR/data/processed/baselines/CatPred \
+  --cache_dir /home/adhil/github/EMULaToR/data/processed/baselines/CatPred/embeddings \
+  --feature_root /home/adhil/github/EMULaToR/data/processed/baselines/CatPred/features \
+  --seeds 666 777 888 \
+  --jobs 5 \
+  --max_tasks_per_child 1
+
+# 7) Train one explicit split after caches exist.
+CUDA_VISIBLE_DEVICES=1 conda run -n mldb python emulator_bench/train_single_target_tvt.py \
+  --train_csv /home/adhil/github/EMULaToR/data/processed/baselines/CatPred/kcat/random_splits_grouped_sequence/train.parquet \
+  --val_csv /home/adhil/github/EMULaToR/data/processed/baselines/CatPred/kcat/random_splits_grouped_sequence/val.parquet \
+  --test_csv /home/adhil/github/EMULaToR/data/processed/baselines/CatPred/kcat/random_splits_grouped_sequence/test.parquet \
+  --out_dir /home/adhil/github/EMULaToR/data/processed/baselines/CatPred/kcat/random_splits_grouped_sequence/catpred_results/paper_defaults/seed_42 \
+  --device cuda:0 \
   --seed 42 \
-  --epochs 30 \
-  --batch_size 16 \
-  --ensemble_size 10 \
-  --num_workers 8 \
-  --device cuda:0 \
-  --mixed_precision auto \
-  --optimizer_fused auto \
-  --lr_scheduler cosine_warmup \
-  --val_every_n_epochs 2 \
-  --final_epoch_metrics_only \
-  --early_stopping_patience 4 \
-  --metric rmse \
-  --ram_budget_gb 90 \
-  --cache_dir ~/github/EMULaToR/data/processed/baselines/CatPred/embeddings \
-  --require_cached_esm \
-  --add_esm_feats \
-  --loss_function mve \
-  --seq_embed_dim 36 \
-  --seq_self_attn_nheads 6 \
-  --add_pretrained_egnn_feats \
-  --pretrained_egnn_feats_path ~/github/EMULaToR/data/processed/baselines/CatPred/embeddings/progres_all_pdb_embeddings.pt
-
-# 3) Predict/score from a checkpoint directory
-python emulator_bench/predict_single_target.py \
-  --input_csv ~/github/EMULaToR/data/processed/baselines/CatPred/enzyme_sequence_splits/threshold_0.09/test.parquet \
-  --sequence_col sequence \
-  --uniprot_id_col pdbs \
-  --checkpoint_dir ~/github/EMULaToR/data/processed/baselines/CatPred/manual_runs/enz_seq_0_09/seed_42/fold_0 \
-  --out_csv ~/github/EMULaToR/data/processed/baselines/CatPred/manual_runs/enz_seq_0_09/seed_42/test_preds.csv \
-  --metrics_csv ~/github/EMULaToR/data/processed/baselines/CatPred/manual_runs/enz_seq_0_09/seed_42/test_metrics.csv \
-  --smiles_columns smiles \
-  --target_columns log10_value \
-  --device cuda:0
-
-# 4) Batch benchmark over splits/thresholds/seeds
-CUDA_VISIBLE_DEVICES=0 python emulator_bench/run_split_benchmarks.py \
-  --base_dir ~/github/EMULaToR/data/processed/baselines/CatPred \
-  --split_groups enzyme_sequence_splits substrate_splits \
-  --thresholds threshold_0.09 threshold_0.1 threshold_0.3 \
-  --seeds 42 43 44 \
-  --sequence_col sequence \
-  --uniprot_id_col pdbs \
-  --smiles_columns smiles \
-  --target_columns log10_value \
-  --epochs 30 \
-  --batch_size 16 \
-  --ensemble_size 10 \
-  --num_workers 8 \
-  --device cuda:0 \
-  --mixed_precision auto \
-  --optimizer_fused auto \
-  --lr_scheduler cosine_warmup \
-  --val_every_n_epochs 2 \
-  --final_epoch_metrics_only \
-  --early_stopping_patience 4 \
-  --metric rmse \
-  --warm_esm_cache \
-  --cache_dir ~/github/EMULaToR/data/processed/baselines/CatPred/embeddings \
+  --cache_batch_graphs \
+  --strict_precompute \
   --require_cached_esm
 
-# 5) Optuna sweep directly (persistent DB via --storage)
-CUDA_VISIBLE_DEVICES=0,1,2,3 python emulator_bench/tune_optuna.py \
-  --base_dir ~/github/EMULaToR/data/processed/baselines/CatPred \
-  --split_groups enzyme_sequence_splits \
-  --thresholds threshold_0.09 \
+# 8) Optuna tuning example, separate from default retraining.
+CUDA_VISIBLE_DEVICES=1 conda run -n mldb python emulator_bench/tune_optuna.py \
+  --base_dir /home/adhil/github/EMULaToR/data/processed/baselines/CatPred \
+  --value_type kcat \
+  --split_groups random_splits_grouped_sequence \
+  --n_trials 20 \
+  --sweep_batch_size \
   --metric RMSE \
-  --metric_name rmse \
   --eval_split val \
-  --epochs 30 \
-  --val_every_n_epochs 2 \
-  --n_trials 30 \
-  --batch_size 16 \
-  --ensemble_size 10 \
-  --num_workers 2 \
-  --smart_batching \
-  --ram_budget_gb 90 \
-  --parallel_trials_per_gpu 1 \
-  --storage sqlite:///~/github/EMULaToR/data/processed/baselines/CatPred/optuna_enz_seq_0_09.db \
-  --study_name catpred_enz_seq_0_09_rmse \
-  --add_esm_feats \
-  --seq_embed_dim 36 \
-  --seq_self_attn_nheads 6 \
-  --final_epoch_metrics_only \
-  --early_stopping_patience 4 \
-  --esm_warm_batch_size 256 \
-  --sweep_fast_mode \
-  --skip_native_test_eval \
-  --cache_dir ~/github/EMULaToR/data/processed/baselines/CatPred/embeddings \
-  --require_cached_esm
-
-# 6) Optuna sweep via launcher (matches your requested style)
-python emulator_bench/launch_parallel_optuna.py \
-  --gpus 0 1 2 3 \
-  --base_dir ~/github/EMULaToR/data/processed/baselines/CatPred \
-  --split_groups enzyme_sequence_splits \
-  --threshold threshold_0.09 \
-  --metric rmse \
-  --eval_split val \
-  --epochs 30 \
-  --val_every 2 \
-  --n_trials 30 \
-  --batch_size 16 \
-  --num_workers 8 \
-  --pin_memory \
-  --storage sqlite:///~/github/EMULaToR/data/processed/baselines/CatPred/optuna_enz_seq_0_09.db \
-  --study_name catpred_enz_seq_0_09_rmse
-
-# 7) Retrain from best Optuna trial (storage + study), parallel over GPUs
-python emulator_bench/retrain_from_optuna_best.py \
-  --base_dir ~/github/EMULaToR/data/processed/baselines/CatPred \
-  --split_groups enzyme_sequence_splits substrate_splits \
-  --thresholds threshold_0.09 threshold_0.1 threshold_0.3 \
-  --seeds 42 43 44 45 46 \
-  --gpus 0 1 2 3 \
-  --storage sqlite:///~/github/EMULaToR/data/processed/baselines/CatPred/optuna_enz_seq_0_09.db \
-  --study_name catpred_enz_seq_0_09_rmse \
-  --run_name retrain_from_optuna_enz_seq_0_09 \
-  --task_name catpred \
-  --epochs 30 \
-  --ensemble_size 10 \
-  --num_workers 8 \
-  --metric_name rmse \
-  --val_every_n_epochs 2 \
-  --final_epoch_metrics_only \
-  --early_stopping_patience 4 \
-  --cache_dir ~/github/EMULaToR/data/processed/baselines/CatPred/embeddings \
-  --require_cached_esm
-
-# 7b) Explicitly export best Optuna params from persistent DB
-python emulator_bench/export_optuna_best.py \
-  --storage sqlite:///~/github/EMULaToR/data/processed/baselines/CatPred/optuna_enz_seq_0_09.db \
-  --study_name catpred_enz_seq_0_09_rmse \
-  --out_json ~/github/EMULaToR/data/processed/baselines/CatPred/optuna_studies/catpred_enz_seq_0_09_best.json
-
-# 8) Same retrain, but using exported best hparams JSON instead of DB
-python emulator_bench/retrain_from_optuna_best.py \
-  --base_dir ~/github/EMULaToR/data/processed/baselines/CatPred \
-  --split_groups enzyme_sequence_splits \
-  --thresholds threshold_0.09 \
-  --seeds 42 43 44 \
-  --gpus 0 1 \
-  --best_hparams_json ~/github/EMULaToR/data/processed/baselines/CatPred/optuna_studies/catpred_enz_seq_0_09_rmse_best_hparams.json \
-  --run_name retrain_from_best_json
-
-# 8b) Retrain using original CatPred hparams (no Optuna DB required)
-python emulator_bench/retrain_from_optuna_best.py \
-  --base_dir ~/github/EMULaToR/data/processed/baselines/CatPred \
-  --split_groups enzyme_sequence_splits \
-  --thresholds threshold_0.09 \
-  --seeds 42 43 44 \
-  --gpus 0 1 2 \
-  --best_hparams_json ~/github/EMULaToR/data/processed/baselines/CatPred/original_catpred_retrain_hparams.json \
-  --run_name retrain_original_catpred_no_ensemble \
-  --task_name catpred \
-  --epochs 30 \
-  --ensemble_size 1 \
-  --sequence_col sequence \
-  --uniprot_id_col pdbs \
-  --smiles_columns smiles \
-  --target_columns log10_value \
-  --cache_dir ~/github/EMULaToR/data/processed/baselines/CatPred/embeddings \
-  --require_cached_esm \
-  --add_esm_feats \
-  --loss_function mve \
-  --seq_embed_dim 36 \
-  --seq_self_attn_nheads 6 \
-  --lr_scheduler noam \
-  --optimizer_fused off \
-  --add_pretrained_egnn_feats \
-  --pretrained_egnn_feats_path ~/github/EMULaToR/data/processed/baselines/CatPred/embeddings/progres_all_pdb_embeddings_dict.pt \
-  --cpu_threads 4 \
-  --interop_threads 1 \
-  --verbose_workers
-
-python emulator_bench/retrain_from_optuna_best.py \
-  --base_dir ~/github/EMULaToR/data/processed/baselines/CatPred \
-  --split_groups substrate_splits \
-  --thresholds threshold_0.3 \
-  --seeds 42 43 44 \
-  --gpus 0 1 2 \
-  --best_hparams_json ~/github/EMULaToR/data/processed/baselines/CatPred/original_catpred_retrain_hparams.json \
-  --run_name retrain_original_catpred_no_ensemble \
-  --task_name catpred \
-  --epochs 30 \
-  --ensemble_size 1 \
-  --sequence_col sequence \
-  --uniprot_id_col pdbs \
-  --smiles_columns smiles \
-  --target_columns log10_value \
-  --cache_dir ~/github/EMULaToR/data/processed/baselines/CatPred/embeddings \
-  --require_cached_esm \
-  --add_esm_feats \
-  --loss_function mve \
-  --seq_embed_dim 36 \
-  --seq_self_attn_nheads 6 \
-  --lr_scheduler noam \
-  --optimizer_fused off \
-  --add_pretrained_egnn_feats \
-  --pretrained_egnn_feats_path ~/github/EMULaToR/data/processed/baselines/CatPred/embeddings/progres_all_pdb_embeddings_dict.pt \
-  --cpu_threads 4 \
-  --interop_threads 1 \
-  --verbose_workers
-
-# 9) Useful optional passthrough for structure embeddings (if you have a precomputed Progres/EGNN dict)
-# Append these to train/tune/retrain commands above:
-#   --add_pretrained_egnn_feats --pretrained_egnn_feats_path /path/to/catpred_progres_embeds_dict.pt
+  --storage sqlite:////home/adhil/github/EMULaToR/data/processed/baselines/CatPred/optuna_catpred_kcat.db \
+  --study_name catpred_kcat_rmse

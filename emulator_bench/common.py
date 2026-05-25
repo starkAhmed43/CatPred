@@ -11,6 +11,52 @@ import pandas as pd
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_MODEL_NAME = "CatPred"
+DEFAULT_VALUE_TYPES = ("kcat", "km", "ki")
+DEFAULT_SPLIT_GROUPS = (
+    "random_splits_grouped_sequence",
+    "random_splits_grouped_smiles",
+    "uniprot_time_splits",
+    "enzyme_sequence_splits",
+    "enzyme_structure_splits",
+    "substrate_splits",
+    "conformer_cosine_splits",
+)
+KEY_COLUMNS = ("smiles", "sequence", "value", "smiles_hash", "uniprot_date", "log10_value")
+STRUCTURE_COLUMNS = (
+    "pdbs",
+    "pdb_source",
+    "pdb_type",
+    "structure_path",
+    "chain_id",
+    "catpred_structure_id",
+    "resolved_structure_status",
+    "resolved_structure_identity",
+    "resolved_structure_chain_id",
+    "resolved_structure_reason",
+)
+
+
+def default_base_dir() -> Path:
+    env_override = os.getenv("CATPRED_BENCH_BASE_DIR") or os.getenv("EMULATOR_CATPRED_DATA_DIR")
+    if env_override:
+        return Path(env_override).expanduser().resolve()
+    return (
+        REPO_ROOT.parent
+        / "EMULaToR"
+        / "data"
+        / "processed"
+        / "baselines"
+        / DEFAULT_MODEL_NAME
+    ).resolve()
+
+
+def default_embeddings_dir() -> Path:
+    return default_base_dir() / "embeddings"
+
+
+def default_features_dir() -> Path:
+    return default_base_dir() / "features"
 
 
 def ensure_repo_on_path() -> None:
@@ -24,19 +70,90 @@ def default_cache_dir() -> str:
     if env_override:
         return str(Path(env_override).expanduser().resolve())
 
-    external_cache = (
-        REPO_ROOT.parent
-        / "EMULaToR"
-        / "data"
-        / "processed"
-        / "baselines"
-        / "catpred"
-        / "embeddings"
-    )
+    external_cache = default_embeddings_dir()
     if external_cache.parent.exists():
         return str(external_cache.resolve())
 
     return str((REPO_ROOT / "emulator_bench" / ".cache_embeddings").resolve())
+
+
+def stable_hash(payload, length: int = 16) -> str:
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode("utf-8")).hexdigest()[:length]
+
+
+def read_table(path: str | Path, columns=None) -> pd.DataFrame:
+    return load_tabular_dataframe(path, usecols=columns)
+
+
+def write_table_atomic(df: pd.DataFrame, path: str | Path) -> None:
+    path = Path(path).expanduser().resolve()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    suffix = path.suffix.lower()
+    tmp_path = path.with_name(f".{path.name}.tmp.{os.getpid()}{suffix}")
+    if suffix == ".parquet":
+        df.to_parquet(tmp_path, index=False)
+    elif suffix == ".csv":
+        df.to_csv(tmp_path, index=False)
+    else:
+        raise ValueError(f"Unsupported tabular format for {path}. Expected .csv or .parquet.")
+    os.replace(tmp_path, path)
+
+
+def normalize_threshold_args(raw_thresholds):
+    if raw_thresholds is None:
+        return None
+    if isinstance(raw_thresholds, str):
+        raw_thresholds = [item.strip() for item in raw_thresholds.split(",")]
+    thresholds = []
+    for item in raw_thresholds:
+        text = str(item).strip()
+        if text:
+            thresholds.append(text if text.startswith("threshold_") or text in {"default", "root", "all"} else f"threshold_{text}")
+    return thresholds or None
+
+
+def parse_list_arg(raw, default=None):
+    if raw is None:
+        return list(default or [])
+    if isinstance(raw, (list, tuple)):
+        out = []
+        for item in raw:
+            out.extend(parse_list_arg(item))
+        return out
+    return [item.strip() for item in str(raw).split(",") if item.strip()]
+
+
+def discover_split_jobs(base_dir: str | Path | None = None, value_types=None, split_groups=None, thresholds=None):
+    base = Path(base_dir or default_base_dir()).expanduser().resolve()
+    selected_values = parse_list_arg(value_types, DEFAULT_VALUE_TYPES)
+    selected_groups = parse_list_arg(split_groups, DEFAULT_SPLIT_GROUPS)
+    selected_thresholds = normalize_threshold_args(thresholds)
+
+    jobs = []
+    for value_type in selected_values:
+        value_root = base / value_type
+        if not value_root.exists():
+            continue
+        for split_group, threshold_name, threshold_dir in discover_threshold_dirs(
+            value_root,
+            selected_groups,
+            selected_thresholds,
+        ):
+            train_path, val_path, test_path = ensure_split_triplet(threshold_dir)
+            if not (train_path and val_path and test_path):
+                continue
+            jobs.append(
+                {
+                    "value_type": value_type,
+                    "split_group": split_group,
+                    "threshold": threshold_name,
+                    "threshold_dir": str(threshold_dir.resolve()),
+                    "train_path": str(Path(train_path).resolve()),
+                    "val_path": str(Path(val_path).resolve()),
+                    "test_path": str(Path(test_path).resolve()),
+                }
+            )
+    return jobs
 
 
 def discover_threshold_dirs(value_root: Path, split_groups, explicit_thresholds=None):

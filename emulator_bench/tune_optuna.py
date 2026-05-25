@@ -11,7 +11,16 @@ from tqdm.auto import tqdm
 
 os.environ["TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD"] = "1"
 
-from common import REPO_ROOT, default_cache_dir, discover_threshold_dirs, ensure_split_triplet, materialize_tabular_as_csv, write_json
+from common import (
+    DEFAULT_SPLIT_GROUPS,
+    REPO_ROOT,
+    default_base_dir,
+    default_cache_dir,
+    discover_threshold_dirs,
+    ensure_split_triplet,
+    materialize_tabular_as_csv,
+    write_json,
+)
 
 
 BUILD_SCRIPT = REPO_ROOT / "emulator_bench" / "build_tvt_data.py"
@@ -167,6 +176,7 @@ def train_one(job, args, hp, seed, trial_number, device, passthrough):
             "--final_lr", str(hp["final_lr"]),
             "--warmup_epochs", str(hp["warmup_epochs"]),
             "--dropout", str(hp["dropout"]),
+            "--loss_function", args.loss_function,
             "--ensemble_size", str(args.ensemble_size),
             "--num_workers", str(args.num_workers),
             "--grad_accum_steps", str(args.grad_accum_steps),
@@ -189,6 +199,10 @@ def train_one(job, args, hp, seed, trial_number, device, passthrough):
             cmd.append("--add_esm_feats")
             cmd.extend(["--seq_embed_dim", str(args.seq_embed_dim)])
             cmd.extend(["--seq_self_attn_nheads", str(args.seq_self_attn_nheads)])
+        if args.add_pretrained_egnn_feats:
+            cmd.extend(["--add_pretrained_egnn_feats", "--pretrained_egnn_feats_path", args.pretrained_egnn_feats_path])
+        if args.strict_precompute:
+            cmd.append("--strict_precompute")
         cmd.append("--final_epoch_metrics_only" if args.final_epoch_metrics_only else "--no-final_epoch_metrics_only")
         if args.overwrite_esm_cache:
             cmd.append("--overwrite_esm_cache")
@@ -235,23 +249,25 @@ def train_one(job, args, hp, seed, trial_number, device, passthrough):
 
 def main():
     parser = argparse.ArgumentParser(description="Optuna tuning for the CatPred emulator benchmark.")
-    parser.add_argument("--base_dir", default="/home/ubuntu/adhil/EMULaToR/data/processed/baselines/catpred", type=str)
-    parser.add_argument("--value_type", default="custom", type=str)
-    parser.add_argument("--split_groups", nargs="+", default=["enzyme_sequence_splits", "substrate_splits", "random_splits"])
+    parser.add_argument("--base_dir", default=str(default_base_dir()), type=str)
+    parser.add_argument("--value_type", default="kcat", type=str)
+    parser.add_argument("--split_groups", nargs="+", default=list(DEFAULT_SPLIT_GROUPS))
     parser.add_argument("--thresholds", nargs="+", default=None)
     parser.add_argument("--max_jobs", default=4, type=int)
     parser.add_argument("--dataset_name", default="custom", type=str)
     parser.add_argument("--dataset_type", default="regression", type=str)
     parser.add_argument("--sequence_col", default="sequence", type=str)
-    parser.add_argument("--uniprot_id_col", default="uniprot_id", type=str)
+    parser.add_argument("--uniprot_id_col", default="catpred_structure_id", type=str)
     parser.add_argument("--smiles_columns", nargs="+", default=["smiles"])
     parser.add_argument("--target_columns", nargs="+", default=["log10_value"])
     parser.add_argument("--warm_esm_cache", action="store_true")
     parser.add_argument("--esm_warm_batch_size", default=64, type=int)
     parser.add_argument("--auto_warm_esm_cache", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--overwrite_esm_cache", action="store_true")
-    parser.add_argument("--require_cached_esm", action="store_true")
-    parser.add_argument("--add_esm_feats", action="store_true")
+    parser.add_argument("--require_cached_esm", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--add_esm_feats", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--add_pretrained_egnn_feats", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--pretrained_egnn_feats_path", default=str(Path(default_cache_dir()) / "progres" / "progres_egnn_by_structure_id.pt"), type=str)
     parser.add_argument("--seq_embed_dim", default=36, type=int)
     parser.add_argument("--seq_self_attn_nheads", default=6, type=int)
     parser.add_argument("--cache_dir", default=default_cache_dir(), type=str)
@@ -266,6 +282,7 @@ def main():
     parser.add_argument("--epochs", default=30, type=int)
     parser.add_argument("--warmup_epochs", default=2.0, type=float)
     parser.add_argument("--dropout", default=0.0, type=float)
+    parser.add_argument("--loss_function", default="mve", type=str)
     parser.add_argument("--ensemble_size", default=10, type=int)
     parser.add_argument("--num_workers", default=4, type=int)
     parser.add_argument("--grad_accum_steps", default=1, type=int)
@@ -281,6 +298,7 @@ def main():
     parser.add_argument("--ram_budget_gb", default=90.0, type=float)
     parser.add_argument("--disable_tf32", action="store_true")
     parser.add_argument("--disable_molgraph_disk_cache", action="store_true")
+    parser.add_argument("--strict_precompute", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--smart_batching", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--cache_batch_graphs", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--bucket_multiplier", default=50, type=int)
@@ -292,9 +310,9 @@ def main():
     parser.add_argument("--early_stopping_min_delta", default=0.0, type=float)
     parser.add_argument("--sequence_max_length", default=2048, type=int)
     parser.add_argument("--extra_metrics", nargs="+", default=["mae", "mse", "r2"])
-    parser.add_argument("--batch_size", default=16, type=int)
+    parser.add_argument("--batch_size", default=32, type=int)
     parser.add_argument("--sweep_batch_size", action="store_true")
-    parser.add_argument("--batch_size_candidates", nargs="+", type=int, default=[8, 16, 32])
+    parser.add_argument("--batch_size_candidates", nargs="+", type=int, default=[32, 64, 128])
     parser.add_argument("--sweep_dropout", action="store_true")
     parser.add_argument("--dropout_candidates", nargs="+", type=float, default=[0.0, 0.05, 0.1, 0.2])
     parser.add_argument("--sweep_warmup_epochs", action="store_true")

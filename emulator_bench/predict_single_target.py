@@ -82,15 +82,19 @@ def evaluate_predictions_csv(
             gpu_index = 0
 
     if loaded_bundle is None:
+        checkpoint_paths = sorted(str(path) for path in Path(checkpoint_dir).glob("model_*/model.pt"))
         pred_argv = [
             "--test_path", input_csv,
             "--preds_path", str(Path(input_csv).with_suffix(".preds.tmp.csv")),
-            "--checkpoint_dir", checkpoint_dir,
             "--protein_records_path", protein_records_path,
             "--batch_size", str(batch_size),
             "--num_workers", str(num_workers),
             "--drop_extra_columns",
         ]
+        if checkpoint_paths:
+            pred_argv.extend(["--checkpoint_paths", *checkpoint_paths])
+        else:
+            pred_argv.extend(["--checkpoint_dir", checkpoint_dir])
         if use_cuda:
             pred_argv.extend(["--gpu", str(gpu_index)])
         else:
@@ -114,7 +118,7 @@ def evaluate_predictions_csv(
         target_columns=task_names if task_names else target_columns,
         skip_invalid_smiles=True,
         args=pred_args,
-        store_row=False,
+        store_row=True,
         loss_function=train_args.loss_function,
     )
     test_loader = MoleculeDataLoader(
