@@ -422,7 +422,7 @@ def _apply_cpu_thread_env(env: dict, cpu_threads: int | None, interop_threads: i
 
 
 def _run_train_job(item) -> dict:
-    cmd, out_dir, gpu, env = item
+    cmd, out_dir, gpu, env, gpu_semaphore = item
     if _STOP_REQUESTED.is_set():
         return {"out_dir": str(out_dir), "gpu": gpu, "status": "stopped_before_start"}
     marker = out_dir / "final_results_test.csv"
@@ -432,6 +432,7 @@ def _run_train_job(item) -> dict:
     env["CUDA_VISIBLE_DEVICES"] = str(gpu)
     env["TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD"] = "1"
     label = f"train gpu={gpu} out={out_dir}"
+    gpu_semaphore.acquire()
     try:
         _run_subprocess(cmd, env, label)
     except subprocess.CalledProcessError as exc:
@@ -450,6 +451,8 @@ def _run_train_job(item) -> dict:
             except ValueError:
                 result["signal_name"] = f"SIG{returncode * -1}"
         return result
+    finally:
+        gpu_semaphore.release()
     return {"out_dir": str(out_dir), "gpu": gpu, "status": "completed"}
 
 
@@ -547,17 +550,25 @@ def main() -> None:
     train_items = []
     base_env = os.environ.copy()
     _apply_cpu_thread_env(base_env, args.cpu_threads, args.interop_threads)
+    per_gpu_limit = max(1, args.max_parallel_per_gpu)
+    gpu_semaphores = {gpu: threading.BoundedSemaphore(per_gpu_limit) for gpu in gpus}
     slots = []
-    for gpu in gpus:
-        slots.extend([gpu] * max(1, args.max_parallel_per_gpu))
+    for _slot_idx in range(per_gpu_limit):
+        slots.extend(gpus)
+    pending_jobs = 0
     for idx, job in enumerate(jobs):
         for seed in args.seeds:
             cmd, out_dir = _train_command(job, seed, args, hparams)
-            train_items.append((cmd, out_dir, slots[len(train_items) % len(slots)], base_env))
+            marker = out_dir / "final_results_test.csv"
+            slot_idx = pending_jobs if not marker.exists() else len(train_items)
+            gpu = slots[slot_idx % len(slots)]
+            train_items.append((cmd, out_dir, gpu, base_env, gpu_semaphores[gpu]))
+            if not marker.exists():
+                pending_jobs += 1
 
-    print(f"[launch] train_jobs={len(train_items)} gpu_slots={slots}", flush=True)
+    print(f"[launch] train_jobs={len(train_items)} pending_jobs={pending_jobs} gpu_slots={slots}", flush=True)
     if args.dry_run:
-        for cmd, out_dir, gpu, _env in train_items:
+        for cmd, out_dir, gpu, _env, _gpu_semaphore in train_items:
             print(f"[gpu {gpu}] {' '.join(cmd)}")
         return
 
