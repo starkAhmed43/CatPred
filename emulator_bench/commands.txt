@@ -90,3 +90,9 @@ CUDA_VISIBLE_DEVICES=1 conda run -n mldb python emulator_bench/tune_optuna.py \
   --eval_split val \
   --storage sqlite:////home/adhil/github/EMULaToR/data/processed/baselines/CatPred/optuna_catpred_kcat.db \
   --study_name catpred_kcat_rmse
+
+# 9) Aggregate kcat/km/ki results and write aggregate + missing-result reports.
+conda run -n mldb python emulator_bench/aggregate_catpred_results.py \
+  --base_dir /home/adhil/github/EMULaToR/data/processed/baselines/CatPred \
+  --run_names paper_defaults_single_model \
+  --seeds 666 777 888
