@@ -13,7 +13,13 @@ import pandas as pd
 from Bio.Align import PairwiseAligner
 from Bio.PDB import PDBParser, is_aa
 from Bio.SeqUtils import seq1
-from tqdm.auto import tqdm
+try:
+    from src.utils.rich_progress import progress, write
+except ModuleNotFoundError:
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+    from src.utils.rich_progress import progress, write
 
 os.environ["TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD"] = "1"
 
@@ -223,7 +229,7 @@ def _candidate_lookup(value_root: Path, needed_keys: set[str], needed_sequence_k
     lookup: dict[str, list[dict]] = {}
     frame_columns = list(frame.columns)
     row_iter = (dict(zip(frame_columns, values)) for values in frame.itertuples(index=False, name=None))
-    for row in tqdm(row_iter, total=len(frame), desc=f"Index {path.name}", leave=False):
+    for row in progress(row_iter, total=len(frame), desc=f"Index {path.name}", leave=False):
         key = _row_key(row)
         seq_key = _sequence_key(row)
         if key in needed_keys:
@@ -283,7 +289,7 @@ def _prefill_sequence_cache(
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         with concurrent.futures.ProcessPoolExecutor(max_workers=max(1, workers)) as executor:
             iterator = executor.map(_parse_pdb_worker, missing, chunksize=max(1, len(missing) // max(1, workers * 8)))
-            for pdb_id, entries, error in tqdm(iterator, total=len(missing), desc="Parse PDB chains", unit="pdb"):
+            for pdb_id, entries, error in progress(iterator, total=len(missing), desc="Parse PDB chains", unit="pdb"):
                 sequence_cache[pdb_id] = entries
                 if error:
                     sequence_cache[f"{pdb_id}__error"] = error
@@ -430,7 +436,7 @@ def _align_one_file(
     aligner = _make_aligner()
     resolved = []
     cache_hits = 0
-    for row in tqdm(rows_to_resolve, desc=f"Align {path.name}", leave=False):
+    for row in progress(rows_to_resolve, desc=f"Align {path.name}", leave=False):
         candidates = _candidate_rows(row, lookup)
         selection_key = stable_hash(
             {
@@ -552,7 +558,7 @@ def main() -> None:
     selection_cache_path = cache_root / "selection_cache.json"
     selection_cache = _load_json_default(selection_cache_path, {})
 
-    for job in tqdm(jobs, desc="Update split files", unit="job"):
+    for job in progress(jobs, desc="Update split files", unit="job"):
         lookup = lookups[job["value_type"]]
         for split_key in ("train_path", "val_path", "test_path"):
             path = Path(job[split_key])

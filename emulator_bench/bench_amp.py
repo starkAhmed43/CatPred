@@ -8,7 +8,13 @@ import torch
 import torch.nn as nn
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import _LRScheduler
-from tqdm import tqdm
+try:
+    from src.utils.rich_progress import progress, write
+except ModuleNotFoundError:
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+    from src.utils.rich_progress import progress, write
 
 
 def resolve_mixed_precision(device: torch.device, mode: str = "auto"):
@@ -80,7 +86,7 @@ def install_amp_patches(mixed_precision: str = "auto") -> None:
             "yes",
             "on",
         }
-        show_loss_postfix = os.getenv("CATPRED_BENCH_TQDM_LOSS", "1").strip().lower() in {
+        show_loss_postfix = os.getenv("CATPRED_BENCH_PROGRESS_LOSS", "1").strip().lower() in {
             "1",
             "true",
             "yes",
@@ -123,7 +129,7 @@ def install_amp_patches(mixed_precision: str = "auto") -> None:
         empty_cache_interval = _cuda_empty_cache_interval()
         optimizer.zero_grad(set_to_none=True)
 
-        pbar = tqdm(data_loader, total=len(data_loader), leave=False)
+        pbar = progress(data_loader, total=len(data_loader), leave=False)
         for batch_idx, batch in enumerate(pbar):
             mol_batch, features_batch, target_batch, mask_batch, atom_descriptors_batch, atom_features_batch, bond_descriptors_batch, bond_features_batch, constraints_batch, data_weights_batch = \
                 batch.batch_graph(), batch.features(), batch.targets(), batch.mask(), batch.atom_descriptors(), \
@@ -363,7 +369,7 @@ def install_amp_patches(mixed_precision: str = "auto") -> None:
         autocast_dtype, _precision_label, _precision_device_index = resolve_mixed_precision(device, precision_mode)
         empty_cache_interval = _cuda_empty_cache_interval()
 
-        for batch_idx, batch in enumerate(tqdm(data_loader, disable=disable_progress_bar, leave=False)):
+        for batch_idx, batch in enumerate(progress(data_loader, disable=disable_progress_bar, leave=False)):
             mol_batch = batch.batch_graph()
             features_batch = batch.features()
             atom_descriptors_batch = batch.atom_descriptors()

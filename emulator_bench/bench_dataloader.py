@@ -7,7 +7,13 @@ from pathlib import Path
 from random import Random
 
 from torch.utils.data import DataLoader, Sampler
-from tqdm import tqdm
+try:
+    from src.utils.rich_progress import progress, write
+except ModuleNotFoundError:
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+    from src.utils.rich_progress import progress, write
 
 from common import default_cache_dir
 
@@ -315,7 +321,7 @@ def install_dataloader_patches(
                         ]
 
                     cached_batches = []
-                    for batch_indices in tqdm(
+                    for batch_indices in progress(
                         index_batches,
                         desc="[bench] batch_graph_cache build",
                         leave=False,

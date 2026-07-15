@@ -6,7 +6,13 @@ from pathlib import Path
 
 import pandas as pd
 import torch
-from tqdm.auto import tqdm
+try:
+    from src.utils.rich_progress import progress, write
+except ModuleNotFoundError:
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+    from src.utils.rich_progress import progress, write
 
 os.environ["TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD"] = "1"
 
@@ -57,7 +63,7 @@ def _collect_split_paths(args) -> list[str]:
 
 def _collect_structures(paths: list[str]) -> dict[str, str]:
     structure_by_id: dict[str, str] = {}
-    for path in tqdm(paths, desc="Scan structure columns", unit="file"):
+    for path in progress(paths, desc="Scan structure columns", unit="file"):
         frame = read_table(path)
         missing = [column for column in ("structure_path", "catpred_structure_id") if column not in frame.columns]
         if missing:

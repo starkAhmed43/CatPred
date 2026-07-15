@@ -10,7 +10,13 @@ from typing import Dict, List
 import numpy as np
 import pandas as pd
 import torch
-from tqdm import trange
+try:
+    from src.utils.rich_progress import progress
+except ModuleNotFoundError:
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+    from src.utils.rich_progress import progress
 
 
 def _install_early_shims() -> None:
@@ -640,7 +646,7 @@ def install_training_control_patches(
                     _restore_rng_state(state.get("rng_state"))
                     info(f"[bench] resume model_{model_idx}: starting at epoch {start_epoch + 1}/{args.epochs}")
 
-            for epoch in trange(start_epoch, args.epochs):
+            for epoch in progress(range(start_epoch, args.epochs)):
                 # debug(f"Epoch {epoch}")
                 n_iter = train_module.train(
                     model=model,
