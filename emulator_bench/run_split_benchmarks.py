@@ -6,7 +6,13 @@ import sys
 from pathlib import Path
 
 import pandas as pd
-from tqdm.auto import tqdm
+try:
+    from src.utils.rich_progress import progress, write
+except ModuleNotFoundError:
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+    from src.utils.rich_progress import progress, write
 
 os.environ["TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD"] = "1"
 
@@ -225,13 +231,13 @@ def main():
         return
 
     prepared = []
-    for job in tqdm(jobs, desc=f"Preparing {args.value_type}", unit="job"):
+    for job in progress(jobs, desc=f"Preparing {args.value_type}", unit="job"):
         one = maybe_build_data(job, args)
         if one is not None:
             prepared.append(one)
 
     run_rows = []
-    for job in tqdm(prepared, desc=f"Benchmark {args.value_type}", unit="job"):
+    for job in progress(prepared, desc=f"Benchmark {args.value_type}", unit="job"):
         threshold_dir = Path(job["threshold_dir"])
         train_csv, val_csv, test_csv = ensure_split_triplet(threshold_dir)
         if not (train_csv and val_csv and test_csv):

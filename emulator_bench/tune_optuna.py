@@ -7,7 +7,13 @@ from pathlib import Path
 
 import optuna
 import pandas as pd
-from tqdm.auto import tqdm
+try:
+    from src.utils.rich_progress import progress, write
+except ModuleNotFoundError:
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+    from src.utils.rich_progress import progress, write
 
 os.environ["TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD"] = "1"
 
@@ -369,7 +375,7 @@ def main():
             print(f"- {split_group}/{threshold_name}: {threshold_dir}")
         return
 
-    prepared = [maybe_build(job, args) for job in tqdm(jobs, desc="Preparing jobs", unit="job")]
+    prepared = [maybe_build(job, args) for job in progress(jobs, desc="Preparing jobs", unit="job")]
     prepared = [job for job in prepared if job is not None]
     if not prepared:
         raise RuntimeError("No valid train/val/test split triplets found for tuning.")

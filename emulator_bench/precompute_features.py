@@ -8,7 +8,13 @@ import types
 from pathlib import Path
 
 import pandas as pd
-from tqdm.auto import tqdm
+try:
+    from src.utils.rich_progress import progress, write
+except ModuleNotFoundError:
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+    from src.utils.rich_progress import progress, write
 
 os.environ["TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD"] = "1"
 
@@ -355,7 +361,7 @@ def main() -> None:
     executor = concurrent.futures.ProcessPoolExecutor(**executor_kwargs)
     try:
         futures = [executor.submit(_precompute_one, payload) for payload in payloads]
-        for future in tqdm(concurrent.futures.as_completed(futures), total=len(futures), desc="Precompute", unit="job"):
+        for future in progress(concurrent.futures.as_completed(futures), total=len(futures), desc="Precompute", unit="job"):
             manifest_rows.append(future.result())
         executor.shutdown(wait=True)
     except KeyboardInterrupt:

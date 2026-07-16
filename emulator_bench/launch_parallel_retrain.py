@@ -8,7 +8,19 @@ import sys
 import threading
 from pathlib import Path
 
-from tqdm.auto import tqdm
+try:
+
+    from src.utils.rich_progress import progress, write
+
+except ModuleNotFoundError:
+
+    import sys
+
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+
+    from src.utils.rich_progress import progress, write
 
 os.environ["TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD"] = "1"
 
@@ -579,7 +591,7 @@ def main() -> None:
     futures = []
     try:
         futures = [executor.submit(_run_train_job, item) for item in train_items]
-        for future in tqdm(concurrent.futures.as_completed(futures), total=len(futures), desc="Retrain", unit="job"):
+        for future in progress(concurrent.futures.as_completed(futures), total=len(futures), desc="Retrain", unit="job"):
             result = future.result()
             results.append(result)
             if result.get("status") == "failed":

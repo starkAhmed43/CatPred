@@ -7,7 +7,13 @@ from pathlib import Path
 from typing import List, Optional
 
 import numpy as np
-from tqdm import tqdm
+try:
+    from src.utils.rich_progress import progress, write
+except ModuleNotFoundError:
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+    from src.utils.rich_progress import progress, write
 
 from bench_feature_cache import get_or_compute_esm
 from common import default_cache_dir, materialize_tabular_as_csv
@@ -349,7 +355,7 @@ def _get_data_inline(
         all_constraints_data, all_raw_constraints_data, all_weights = [], [], []
         all_gt, all_lt, all_protein_records = [], [], []
 
-        for i, row in enumerate(tqdm(reader, disable=not show_data_progress, leave=False)):
+        for i, row in enumerate(progress(reader, disable=not show_data_progress, leave=False)):
             smiles = [row[c] for c in smiles_columns]
 
             protein_record = None
@@ -489,7 +495,7 @@ def _get_data_inline(
                 overwrite_default_atom_features=args.overwrite_default_atom_features if args is not None else False,
                 overwrite_default_bond_features=args.overwrite_default_bond_features if args is not None else False,
             )
-            for i, (smiles, targets) in tqdm(
+            for i, (smiles, targets) in progress(
                 enumerate(zip(all_smiles, all_targets)),
                 total=len(all_smiles),
                 disable=not show_data_progress,
